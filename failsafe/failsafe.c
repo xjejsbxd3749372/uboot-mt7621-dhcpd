@@ -49,6 +49,7 @@ enum failsafe_fw_type {
 	FAILSAFE_FW_UBOOT,
 	FAILSAFE_FW_INITRAMFS,
 	FAILSAFE_FW_FACTORY,
+	FAILSAFE_FW_XIAOMI_STOCK,
 };
 
 static enum failsafe_fw_type fw_type;
@@ -59,6 +60,7 @@ extern int write_firmware_failsafe(size_t data_addr, uint32_t data_size);
 extern int write_bootloader_failsafe(size_t data_addr, uint32_t data_size);
 extern int write_uboot_failsafe(size_t data_addr, uint32_t data_size);
 extern int write_factory_failsafe(size_t data_addr, uint32_t data_size);
+extern int write_xiaomi_stock_failsafe(size_t data_addr, uint32_t data_size);
 
 static int output_plain_file(struct httpd_response *response,
 	const char *filename)
@@ -181,6 +183,17 @@ static void upload_handler(enum httpd_uri_handler_status status,
 	fw = httpd_request_find_value(request, "factory");
 	if (fw) {
 		fw_type = FAILSAFE_FW_FACTORY;
+		goto done;
+	}
+
+	fw = httpd_request_find_value(request, "xiaomi_stock");
+	if (fw) {
+		/*
+		 * Official Xiaomi stock image.  Validation happens in
+		 * write_xiaomi_stock_failsafe() so a rejected upload still
+		 * reports its size and MD5 first.
+		 */
+		fw_type = FAILSAFE_FW_XIAOMI_STOCK;
 		goto done;
 	}
 
@@ -320,6 +333,10 @@ static void result_handler(enum httpd_uri_handler_status status,
 				ret = write_uboot_failsafe((size_t)upload_data,
 					upload_size);
 				break;
+			case FAILSAFE_FW_XIAOMI_STOCK:
+				ret = write_xiaomi_stock_failsafe(
+					(size_t)upload_data, upload_size);
+				break;
 			case FAILSAFE_FW_FIRMWARE:
 			default:
 				ret = write_firmware_failsafe((size_t)upload_data,
@@ -414,6 +431,8 @@ int start_web_failsafe(void)
 		httpd_register_uri_handler(inst, "/sysinfo", &sysinfo_handler, NULL);
 		httpd_register_uri_handler(inst, "/backupinfo", &backupinfo_handler, NULL);
 		httpd_register_uri_handler(inst, "/backup", &backup_handler, NULL);
+		httpd_register_uri_handler(inst, "/cpufreq", &cpufreq_handler, NULL);
+		httpd_register_uri_handler(inst, "/params", &params_handler, NULL);
 	}
 	httpd_register_uri_handler(inst, "/reboot", &reboot_handler, NULL);
 
@@ -431,6 +450,9 @@ int start_web_failsafe(void)
 		httpd_register_uri_handler(inst, "/uboot.html", &html_handler, NULL);
 		httpd_register_uri_handler(inst, "/backup.html", &html_handler, NULL);
 		httpd_register_uri_handler(inst, "/reboot.html", &html_handler, NULL);
+		httpd_register_uri_handler(inst, "/official.html", &html_handler, NULL);
+		httpd_register_uri_handler(inst, "/overclock.html", &html_handler, NULL);
+		httpd_register_uri_handler(inst, "/params.html", &html_handler, NULL);
 	}
 
 	httpd_register_uri_handler(inst, "", &not_found_handler, NULL);
