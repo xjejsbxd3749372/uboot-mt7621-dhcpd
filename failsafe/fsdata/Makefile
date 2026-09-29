@@ -45,6 +45,18 @@ obj-y += reboot.o
 FILE_reboot.o := reboot.html
 FSPATH_reboot.o := reboot.html
 
+obj-y += official.o
+FILE_official.o := official.html
+FSPATH_official.o := official.html
+
+obj-y += overclock.o
+FILE_overclock.o := overclock.html
+FSPATH_overclock.o := overclock.html
+
+obj-y += params.o
+FILE_params.o := params.html
+FSPATH_params.o := params.html
+
 obj-y += success.o
 FILE_success.o := success.html
 FSPATH_success.o := success.html
