@@ -1,0 +1,93 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="page_params_title">Parameter editor</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/main.js"></script>
+</head>
+
+<body onload="appInit('params')">
+    <div id="m">
+        <h1 data-i18n="h_params">Parameter editor</h1>
+        <p id="hint" data-i18n-html="hint_params">Edit Xiaomi stock parameters and interface MAC addresses.<br>The current records are checked before any write.</p>
+
+        <div class="params-page">
+            <div class="param-toolbar">
+                <a class="button-link" href="/backup.html" data-i18n="params_backup">Back up Config, Bdata and Factory first</a>
+                <button type="button" class="button-secondary" onclick="loadParams()" data-i18n="params_reload">Reload</button>
+            </div>
+            <div id="params_status" class="oc-message" aria-live="polite"></div>
+
+            <section class="param-section">
+                <div class="param-section-head">
+                    <div>
+                        <h2 data-i18n="params_config_title">Stock environment (Config)</h2>
+                        <p data-i18n="params_config_hint">4 KiB CRC32 record at 0x80000. These values control stock boot and first-boot settings.</p>
+                    </div>
+                    <span id="params_config_crc" class="param-badge">—</span>
+                </div>
+                <div class="param-table-head"><span data-i18n="params_field">Field</span><span data-i18n="params_value">Value</span><span></span></div>
+                <div id="params_config_rows" class="param-table"></div>
+                <div class="param-actions">
+                    <button type="button" class="button-secondary" onclick="addParamRow('config')" data-i18n="params_add">Add field</button>
+                    <button id="params_config_save" type="button" onclick="saveParamEnv('config')" data-i18n="params_save_config">Save Config</button>
+                </div>
+            </section>
+
+            <section class="param-section">
+                <div class="param-section-head">
+                    <div>
+                        <h2 data-i18n="params_bdata_title">Factory identity (Bdata)</h2>
+                        <p data-i18n="params_bdata_hint">16 KiB CRC32 record at 0xC0000. It normally contains the serial number, country, model, color and stock SSIDs.</p>
+                    </div>
+                    <span id="params_bdata_crc" class="param-badge">—</span>
+                </div>
+                <div class="param-table-head"><span data-i18n="params_field">Field</span><span data-i18n="params_value">Value</span><span></span></div>
+                <div id="params_bdata_rows" class="param-table"></div>
+                <div class="param-actions">
+                    <button type="button" class="button-secondary" onclick="addParamRow('bdata')" data-i18n="params_add">Add field</button>
+                    <button id="params_bdata_save" type="button" onclick="saveParamEnv('bdata')" data-i18n="params_save_bdata">Save Bdata</button>
+                </div>
+            </section>
+
+            <section class="param-section">
+                <div class="param-section-head">
+                    <div>
+                        <h2 data-i18n="params_mac_title">MAC addresses (Factory)</h2>
+                        <p data-i18n="params_mac_hint">Only the four verified MAC fields are changed. Keep them consecutive in WAN → LAN → RF1 → RF2 order; surrounding Wi-Fi calibration data is preserved byte-for-byte.</p>
+                    </div>
+                    <span id="params_mac_state" class="param-badge">—</span>
+                </div>
+                <div class="mac-grid">
+                    <label for="mac_rf1"><span data-i18n="params_mac_rf1">RF1 WLAN MAC</span><small>Factory + 0x0004</small></label>
+                    <input id="mac_rf1" class="field-control mac-input" maxlength="17" autocomplete="off" placeholder="00:11:22:33:44:55">
+                    <label for="mac_rf2"><span data-i18n="params_mac_rf2">RF2 WLAN MAC</span><small>Factory + 0x8004</small></label>
+                    <input id="mac_rf2" class="field-control mac-input" maxlength="17" autocomplete="off" placeholder="00:11:22:33:44:56">
+                    <label for="mac_lan"><span data-i18n="params_mac_lan">LAN MAC</span><small>Factory + 0xE000</small></label>
+                    <input id="mac_lan" class="field-control mac-input" maxlength="17" autocomplete="off" placeholder="00:11:22:33:44:53">
+                    <label for="mac_wan"><span data-i18n="params_mac_wan">WAN MAC</span><small>Factory + 0xE006</small></label>
+                    <input id="mac_wan" class="field-control mac-input" maxlength="17" autocomplete="off" placeholder="00:11:22:33:44:52">
+                </div>
+                <div class="param-actions">
+                    <button id="params_mac_save" type="button" onclick="saveParamMacs()" data-i18n="params_save_macs">Save MAC addresses</button>
+                </div>
+            </section>
+        </div>
+
+        <div class="i w">
+            <strong data-i18n="other_warnings">Important</strong>
+            <ul>
+                <li data-i18n="params_warn_backup">Back up Config, Bdata and Factory before making changes.</li>
+                <li data-i18n="params_warn_power">Do not disconnect power while an erase block is being written and verified.</li>
+                <li data-i18n="params_warn_stock">Deleting or changing boot fields may prevent Xiaomi stock firmware from starting.</li>
+                <li data-i18n="params_warn_factory">Incorrect MAC addresses can break networking or permanently duplicate another device identity.</li>
+            </ul>
+        </div>
+    </div>
+    <div id="version"></div>
+</body>
+
+</html>
