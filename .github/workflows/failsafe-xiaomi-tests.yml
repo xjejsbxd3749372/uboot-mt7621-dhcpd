@@ -36,7 +36,7 @@ jobs:
         run: python3 tests/check_copy_sync.py failsafe/failsafe_xiaomi.c tests/test_xiaomi_logic.c
 
       - name: build and run the unit tests
-        run: ./tests/run_xiaomi_tests.sh
+        run: bash tests/run_xiaomi_tests.sh
 
       - name: build and run the unit tests under ASan + UBSan
         run: |
