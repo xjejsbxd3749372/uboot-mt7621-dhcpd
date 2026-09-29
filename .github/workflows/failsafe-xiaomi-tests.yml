@@ -96,7 +96,7 @@ jobs:
           # GitHub's mirror of the official U-Boot repository.
           git clone --depth 1 --branch v2024.10 \
             https://github.com/u-boot/u-boot.git uboot-upstream
-          echo "cloned $((cd uboot-upstream && git rev-parse --short HEAD))"
+          echo "cloned upstream u-boot at $(git -C uboot-upstream rev-parse --short HEAD)"
 
       - name: build U-Boot for the MIPS QEMU target
         working-directory: uboot-upstream
