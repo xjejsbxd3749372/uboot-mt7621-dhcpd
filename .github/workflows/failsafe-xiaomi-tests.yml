@@ -82,11 +82,11 @@ jobs:
       - name: install QEMU and the MIPS cross toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-misc gcc-mips-linux-gnu
+          sudo apt-get install -y qemu-system-mips gcc-mips-linux-gnu
 
       - name: report what the emulator actually provides
         run: |
-          qemu-system-mips32 -machine help | grep -iE 'malta' || true
+          qemu-system-mips -machine help | grep -iE 'malta' || true
           echo "---"
           echo "NOTE: no MT7621 SoC model exists. NAND, DDR, GPIO and the"
           echo "      reset button that triggers failsafe are NOT emulated."
