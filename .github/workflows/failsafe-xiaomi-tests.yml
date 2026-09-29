@@ -82,7 +82,7 @@ jobs:
       - name: install QEMU and the MIPS cross toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-misc gcc-mips-linux-gnu gcc-mipsel-linux-gnu
+          sudo apt-get install -y qemu-system-misc gcc-mips-linux-gnu
 
       - name: report what the emulator actually provides
         run: |
@@ -101,8 +101,11 @@ jobs:
       - name: build U-Boot for the MIPS QEMU target
         working-directory: uboot-upstream
         run: |
+          # Upstream U-Boot has no MIPS "qemu" defconfig. malta is the
+          # big-endian MIPS board that qemu-system-mips -M malta emulates,
+          # so that is the target to build.
           export ARCH=mips CROSS_COMPILE=mips-linux-gnu-
-          make qemu-mips_defconfig
+          make malta_defconfig
           make -j"$(nproc)"
 
       - name: boot it in QEMU with no disk
