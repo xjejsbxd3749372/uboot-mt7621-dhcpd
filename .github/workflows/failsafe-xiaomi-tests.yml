@@ -116,7 +116,9 @@ jobs:
           # so try both and accept whichever reaches the console.
           booted=0
           for flag in -bios -kernel; do
-            echo "== trying $flag =="
+            command -v qemu-system-mips || \
+            echo "::error::qemu-system-mips is not installed"
+          echo "== trying $flag =="
             set +e
             timeout "${{ inputs.qemu_timeout || '20' }}" \
               qemu-system-mips -M malta -m 256 $flag u-boot.bin \
