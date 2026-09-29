@@ -296,8 +296,14 @@ static int parse_mac(const char *s, u8 out[6])
 	if (!(out[0] | out[1] | out[2] | out[3] | out[4] | out[5]))
 		return -EINVAL;			/* all zero */
 
-	if (!(out[0] & out[1] & out[2] & out[3] & out[4] & out[5]))
-		return -EINVAL;			/* all ones */
+	/*
+	 * Broadcast only when every byte is 0xff.  ANDing the bytes together
+	 * would instead test whether they share any bit, which rejects most
+	 * ordinary addresses (64:09:80:aa:bb:cc has 0x64 & 0x09 == 0).
+	 */
+	if (out[0] == 0xff && out[1] == 0xff && out[2] == 0xff &&
+	    out[3] == 0xff && out[4] == 0xff && out[5] == 0xff)
+		return -EINVAL;			/* broadcast */
 
 	return 0;
 }
@@ -1301,12 +1307,17 @@ static int tar_header_sane(const struct tar_header *th, unsigned long long size)
 	 * Verify the header checksum.  The checksum field itself counts as
 	 * spaces, and a signed char interpretation is what tar uses.
 	 */
+	/*
+	 * Index through the whole record as raw bytes.  Walking it as
+	 * th->name[i] would be out of bounds past the 100-byte name field,
+	 * which is far smaller than the 512-byte block.
+	 */
 	for (i = 0; i < sizeof(*th); i++) {
 		if (i >= offsetof(struct tar_header, chksum) &&
 		    i < offsetof(struct tar_header, chksum) + sizeof(th->chksum))
 			sum += ' ';
 		else
-			sum += (unsigned char)th->name[i];
+			sum += (unsigned char)((const char *)th)[i];
 	}
 
 	if (tar_octal(th->chksum, sizeof(th->chksum), &stored))
