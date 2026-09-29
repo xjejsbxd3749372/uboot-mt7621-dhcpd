@@ -1,0 +1,109 @@
+name: failsafe-xiaomi-tests
+
+on:
+  push:
+    paths:
+      - 'failsafe/**'
+      - 'tests/**'
+      - '.github/workflows/failsafe-xiaomi-tests.yml'
+  workflow_dispatch:
+    inputs:
+      fuzz_iters:
+        description: 'Random-buffer iterations in the HDR1 parser sweep'
+        required: false
+        default: '20000'
+      qemu_timeout:
+        description: 'Seconds to let the MIPS testbed U-Boot run'
+        required: false
+        default: '20'
+
+jobs:
+  # Pure host-side logic: the parser, MAC, URL, JSON and clock-bound helpers.
+  # Runs the copied functions under ASan+UBSan, so a read past the end of a
+  # buffer fails the job instead of shipping.
+  host-tests:
+    name: host logic tests (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: check the tested copies still match the source
+        run: python3 tests/check_copy_sync.py failsafe/failsafe_xiaomi.c tests/test_xiaomi_logic.c
+
+      - name: build and run the unit tests
+        run: ./tests/run_xiaomi_tests.sh
+
+      - name: build and run the unit tests under ASan + UBSan
+        run: |
+          gcc -std=c11 -O1 -g -fsanitize=address,undefined \
+              -fno-omit-frame-pointer -fno-strict-aliasing \
+              -o /tmp/t_logic tests/test_xiaomi_logic.c
+          /tmp/t_logic
+
+      - name: HDR1 parser sweep
+        run: |
+          gcc -std=c11 -O1 -g -fsanitize=address,undefined \
+              -fno-omit-frame-pointer -fno-strict-aliasing \
+              -o /tmp/t_fuzz tests/test_xiaomi_fuzz.c
+          /tmp/t_fuzz
+
+      - name: no new warnings with -Wall -Wextra
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+              -fno-strict-aliasing -c -o /dev/null tests/test_xiaomi_logic.c
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+              -fno-strict-aliasing -c -o /dev/null tests/test_xiaomi_fuzz.c
+
+      - name: front-end syntax
+        run: node --check failsafe/fsdata/main.js
+
+  # General-purpose MIPS execution. This does NOT model an MT7621: there is no
+  # NAND, DDR init, GPIO or reset button in QEMU, so the failsafe paths that
+  # need those cannot run here. What it does prove is that the U-Boot
+  # framework builds for MIPS and reaches its console.
+  qemu-mips:
+    name: MIPS testbed U-Boot in QEMU
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install QEMU and the MIPS cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-misc gcc-mips-linux-gnu binutils-mips-linux-gnu
+
+      - name: report what the emulator actually provides
+        run: |
+          qemu-system-mips32 -machine help | grep -iE 'mipssim|malta' || true
+          echo "---"
+          echo "NOTE: no MT7621 SoC model exists. NAND, DDR, GPIO and the"
+          echo "      reset button that triggers failsafe are NOT emulated."
+
+      - name: build U-Boot for the MIPS testbed
+        run: |
+          export ARCH=mips CROSS_COMPILE=mips-linux-gnu-
+          make mipssim_defconfig
+          make -j"$(nproc)" HOSTCFLAGS='-Wno-error'
+
+      - name: boot it in QEMU with no disk
+        run: |
+          timeout "${{ inputs.qemu_timeout || '20' }}" \
+            qemu-system-mips32 -M malta -m 256 \
+              -kernel build/u-boot.bin \
+              -nographic -no-reboot \
+              -serial mon:stdio \
+              -append 'console=ttyS0'
+          rc=$?
+          echo "qemu exit code: $rc"
+          # 124 == timeout, which is the expected result: U-Boot keeps
+          # waiting for input at its prompt instead of exiting.
+          if [ "$rc" -ne 124 ] && [ "$rc" -ne 0 ]; then
+            echo "::error::QEMU failed unexpectedly (rc=$rc)"
+            exit 1
+          fi
+          echo "::notice::U-Boot reached its console and waited for input"
