@@ -67,7 +67,7 @@ jobs:
   # need those cannot run here. What it does prove is that the U-Boot
   # framework builds for MIPS and reaches its console.
   qemu-mips:
-    name: MIPS testbed U-Boot in QEMU
+    name: MIPS U-Boot in QEMU (malta)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,22 +79,23 @@ jobs:
 
       - name: report what the emulator actually provides
         run: |
-          qemu-system-mips32 -machine help | grep -iE 'mipssim|malta' || true
+          qemu-system-mips32 -machine help | grep -iE 'malta' || true
           echo "---"
           echo "NOTE: no MT7621 SoC model exists. NAND, DDR, GPIO and the"
           echo "      reset button that triggers failsafe are NOT emulated."
 
-      - name: build U-Boot for the MIPS testbed
+      - name: build U-Boot for the MIPS QEMU target
         run: |
           export ARCH=mips CROSS_COMPILE=mips-linux-gnu-
-          make mipssim_defconfig
+          make qemu_mips_defconfig
           make -j"$(nproc)" HOSTCFLAGS='-Wno-error'
 
       - name: boot it in QEMU with no disk
         run: |
+          # qemu_mips builds a raw binary loaded by the -M malta machine.
           timeout "${{ inputs.qemu_timeout || '20' }}" \
             qemu-system-mips32 -M malta -m 256 \
-              -kernel build/u-boot.bin \
+              -bios build/u-boot.bin \
               -nographic -no-reboot \
               -serial mon:stdio \
               -append 'console=ttyS0'
