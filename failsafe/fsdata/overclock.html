@@ -1,0 +1,51 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="page_overclock_title">CPU overclock</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/main.js"></script>
+</head>
+
+<body onload="appInit('overclock')">
+    <div id="m">
+        <h1 data-i18n="h_overclock">CPU overclock</h1>
+        <p id="hint">
+            <span data-i18n-html="hint_overclock">Set the MT7621 CPU frequency used for normal system boot.<br>
+                Recovery mode always starts at the safe frequency.</span>
+        </p>
+
+        <div class="oc-panel">
+            <div class="oc-status-grid">
+                <div><span data-i18n="oc_current">Current recovery frequency</span><strong id="oc_current">—</strong></div>
+                <div><span data-i18n="oc_safe">Safe frequency</span><strong id="oc_safe">—</strong></div>
+                <div><span data-i18n="oc_saved">Saved setting</span><strong id="oc_saved">—</strong></div>
+            </div>
+
+            <div class="oc-form-row">
+                <label for="oc_mhz" data-i18n="oc_target">CPU frequency (MHz)</label>
+                <input id="oc_mhz" class="field-control" type="number" inputmode="numeric" value="880">
+            </div>
+            <div id="oc_range" class="oc-range">—</div>
+            <div class="oc-actions">
+                <button type="button" onclick="saveOverclock()" data-i18n="oc_save">Save frequency</button>
+                <button type="button" class="button-secondary" onclick="disableOverclock()" data-i18n="oc_disable">Use safe frequency</button>
+            </div>
+            <div id="oc_status" class="oc-message" aria-live="polite"></div>
+        </div>
+
+        <div class="i w">
+            <strong data-i18n="other_warnings">Important</strong>
+            <ul>
+                <li data-i18n="oc_warn_hang">An unsuitable frequency may cause frequent system hangs.</li>
+                <li data-i18n="oc_warn_data">Instability can corrupt data; increase the frequency gradually.</li>
+                <li data-i18n="oc_warn_recovery">If the system cannot boot, power off, hold Reset for 1–10 seconds while powering on, then clear this setting in Web recovery.</li>
+            </ul>
+        </div>
+    </div>
+    <div id="version"></div>
+</body>
+
+</html>
