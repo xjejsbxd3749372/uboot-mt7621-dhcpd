@@ -93,9 +93,10 @@ jobs:
 
       - name: fetch stock upstream U-Boot
         run: |
+          # GitHub's mirror of the official U-Boot repository.
           git clone --depth 1 --branch v2024.10 \
-            https://source.codeboot.org/pub/scm/u-boot/u-boot.git uboot-upstream
-          echo "cloned $(cd uboot-upstream && git describe --tags 2>/dev/null || echo upstream)"
+            https://github.com/u-boot/u-boot.git uboot-upstream
+          echo "cloned $((cd uboot-upstream && git rev-parse --short HEAD))"
 
       - name: build U-Boot for the MIPS QEMU target
         working-directory: uboot-upstream
