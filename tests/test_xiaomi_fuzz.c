@@ -270,7 +270,6 @@ int main(void)
 	enum { CAP = 8192 };
 	static u8 work[CAP];
 	u8 *buf = malloc(CAP);
-	struct stock_entry e;
 	int accepted = 0, rejected = 0, escapes = 0;
 	int i;
 
