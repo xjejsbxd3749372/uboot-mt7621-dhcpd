@@ -31,7 +31,7 @@
 #include <asm/io.h>
 #include <asm/addrspace.h>
 #include <mach/mt7621_regs.h>
-#include <mt7621_clocks.h>
+#include "clocks.h"
 #endif
 #include <net/httpd.h>
 
@@ -43,7 +43,7 @@
 #include <jffs2/load_kernel.h>
 #endif
 
-#include <flash_helper.h>
+#include "flash_helper.h"
 
 #include "failsafe_internal.h"
 
