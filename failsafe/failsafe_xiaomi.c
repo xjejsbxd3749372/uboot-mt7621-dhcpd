@@ -136,10 +136,6 @@ struct xiaomi_regions {
 	uint64_t factory_size;
 };
 
-static const char * const xiaomi_param_part_names[] = {
-	"config", "bdata", "factory"
-};
-
 static int xiaomi_resolve_regions(struct xiaomi_regions *r)
 {
 	uint64_t config_off = 0, config_size = 0;
@@ -1291,7 +1287,6 @@ static int tar_header_sane(const struct tar_header *th, unsigned long long size)
 	unsigned long long sum = 0;
 	unsigned long long stored;
 	size_t i;
-	int res;
 
 	if (memcmp(th->magic, "ustar", 5))
 		return -EINVAL;
