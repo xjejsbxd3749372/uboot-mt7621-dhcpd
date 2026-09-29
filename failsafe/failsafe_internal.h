@@ -26,4 +26,16 @@ void backup_handler(enum httpd_uri_handler_status status,
 	struct httpd_request *request,
 	struct httpd_response *response);
 
+void cpufreq_handler(enum httpd_uri_handler_status status,
+	struct httpd_request *request,
+	struct httpd_response *response);
+
+void params_handler(enum httpd_uri_handler_status status,
+	struct httpd_request *request,
+	struct httpd_response *response);
+
+void xiaomi_apply_saved_cpu_freq(void);
+
+void xiaomi_sanitize_cpu_freq_env(void);
+
 #endif /* __FAILSAFE_INTERNAL_H */
