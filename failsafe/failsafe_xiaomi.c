@@ -31,7 +31,7 @@
 #include <asm/io.h>
 #include <asm/addrspace.h>
 #include <mach/mt7621_regs.h>
-#include "clocks.h"
+#include <mt7621_clocks.h>
 #endif
 #include <net/httpd.h>
 
