@@ -11,6 +11,7 @@ endif
 obj-y += fs.o failsafe.o
 ifneq ($(CONFIG_FAILSAFE_LEGACY_MODE),y)
 obj-y += failsafe_sysbackup.o
+obj-y += failsafe_xiaomi.o
 endif
 
 endif
