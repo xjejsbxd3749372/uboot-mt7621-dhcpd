@@ -1,0 +1,46 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="page_official_title">Restore Xiaomi firmware</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/main.js"></script>
+</head>
+
+<body onload="appInit('official')">
+    <div id="m">
+        <h1 data-i18n="h_official">Restore Xiaomi firmware</h1>
+        <p id="hint">
+            <span data-i18n-html="hint_official">Restore an official <strong>Xiaomi HDR1 firmware</strong> image.<br>
+                The stock dual kernel/rootfs layout will be rebuilt automatically.</span>
+        </p>
+        <form id="form">
+            <div id="sysinfo" class="sysinfo" data-i18n="sysinfo_loading">Loading system info...</div>
+            <input id="file" type="file" name="xiaomi_stock" accept=".bin,application/octet-stream">
+            <input type="button" value="Upload" data-i18n-value="btn_upload" onclick="upload('xiaomi_stock')">
+        </form>
+        <div>
+            <div class="bar" id="bar" style="display: none; --percent: 0;"></div>
+        </div>
+        <div id="size" style="display: none;">Size: xxxx</div>
+        <div id="md5" style="display: none;">MD5: xxxx</div>
+        <div id="upgrade" style="display: none;">
+            <p data-i18n="prompt_official">Upload complete. Verify the model and file information before restoring.</p>
+            <button class="button" data-i18n="btn_restore_official" onclick="location = '/flashing.html'">Restore now</button>
+        </div>
+        <div class="i w">
+            <strong data-i18n="other_warnings">Important</strong>
+            <ul>
+                <li data-i18n="warn_no_poweroff">do not disconnect power while flash is being erased or written</li>
+                <li data-i18n="warn_official_model">only an exact R2100/RM2100 official image matching this device is accepted</li>
+                <li data-i18n="warn_official_layout">the installed OpenWrt system and overlay will be erased; calibration and device identity are preserved</li>
+                <li data-i18n="warn_restart">after a successful firmware update, the device restarts automatically</li>
+            </ul>
+        </div>
+    </div>
+    <div id="version"></div>
+</body>
+
+</html>
