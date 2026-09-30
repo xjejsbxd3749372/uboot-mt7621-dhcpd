@@ -162,6 +162,7 @@ struct MT7621SoCState {
     SerialMM *uart[3];
     SysBusDevice *nfc;
     QEMUTimer *pc_sample;
+    MemoryRegion dramc_stub;
     /* region-transition trace: which 4KB page the CPU is running in, in order */
     hwaddr last_region;
     int n_regions;
@@ -345,6 +346,61 @@ static void mt7621_pc_sample(void *opaque)
               qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 20 * 1000000ULL);
 }
 
+/*
+ * DDR calibration stub.
+ *
+ * With CONFIG_MT7621_LEGACY_DRAMC_BIN the SPL copies
+ * arch/mips/mach-mt7621/dramc-legacy/mt7621_stage_sram_noprint.bin - exactly
+ * 13928 bytes, which is the literal `addiu t3, $0, 13928' in its memcpy - into
+ * the FE SRAM at 0xbe108800 and jumps there to calibrate the memory
+ * controller over 0x1e005000. That blob sweeps timing registers and waits on
+ * status bits a placeholder can never assert, so it never completes: the PC
+ * sampler showed the same three-step cycle - copy, run SRAM, come back - from
+ * the first sample to the last, and preloader_console_init() sits after DRAM
+ * init, which is why nothing was ever printed to the console.
+ *
+ * QEMU hands the guest working RAM without calibration, so the honest thing
+ * for this model is to make the blob a no-op that returns to its caller. Only
+ * the first two instructions are intercepted; the rest of the SRAM window
+ * still behaves normally.
+ *
+ *   0x03e00008   jr ra
+ *   0x00000000   nop
+ */
+static uint64_t mt7621_dramc_stub_read(void *opaque, hwaddr addr,
+                                       unsigned size)
+{
+    static const uint8_t stub[8] = { 0x08, 0x00, 0xe0, 0x03,
+                                     0x00, 0x00, 0x00, 0x00 };
+    uint64_t v = 0;
+    unsigned i;
+
+    for (i = 0; i < size && addr + i < sizeof(stub); i++) {
+        v |= (uint64_t)stub[addr + i] << (8 * i);
+    }
+    return v;
+}
+
+/*
+ * Writes are accepted and dropped. A NULL write handler would make QEMU
+ * report the copy of the blob into this address as a rejected write and raise
+ * a bus error, and the read handler always answers with the two stub
+ * instructions regardless of what was stored, so the stub survives the copy
+ * that overwrites everything around it.
+ */
+static void mt7621_dramc_stub_write(void *opaque, hwaddr addr, uint64_t val,
+                                    unsigned size)
+{
+}
+
+static const MemoryRegionOps mt7621_dramc_stub_ops = {
+    .read = mt7621_dramc_stub_read,
+    .write = mt7621_dramc_stub_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+};
+
 static void mt7621_soc_init(Object *obj)
 {
     MT7621SoCState *s = MT7621_SOC(obj);
@@ -452,6 +508,16 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
      * 0xbe10d000 = kseg1 of 0x1e10d000) sits inside the FE window, and
      * because it probes the CM registers in CDMM at offset 0x2028.
      */
+    /*
+     * Installed before the generic windows and at priority 1, so it hides
+     * them where it overlaps (memory_region_add_subregion_overlap resolves
+     * "higher priority hides lower priority").
+     */
+    memory_region_init_io(&s->dramc_stub, OBJECT(s),
+                          &mt7621_dramc_stub_ops, s, "mt7621-dramc-stub", 8);
+    memory_region_add_subregion_overlap(get_system_memory(), 0x1e108800,
+                                        &s->dramc_stub, 1);
+
     for (unsigned i = 0; i < MT7621_N_SCRATCH; i++) {
         s->scratch[i].size = mt7621_scratch_map[i].size;
         s->scratch[i].name = mt7621_scratch_map[i].name;
