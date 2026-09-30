@@ -14,18 +14,21 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "hw/char/serial.h"
+#include "hw/char/serial-mm.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "hw/mips/mips.h"
-#include "hw/mips/cpudevs.h"
 #include "hw/misc/unimp.h"
 #include "hw/misc/mt7621-nfc.h"
 #include "hw/qdev-properties.h"
 #include "exec/memory.h"
 #include "sysemu/reset.h"
 #include "qom/object.h"
+#include "sysemu/blockdev.h"
 #include "block/block-backend.h"
-#include "block/block_int.h"
+/* MIPSCPU, MIPS_CPU_TYPE_NAME, cpu_mips_*_init() live in the target headers,
+ * which are on the include path for sources in mips_ss (see malta.c). */
+#include "target/mips/cpu.h"
 
 #define TYPE_MT7621_SOC "mt7621-soc"
 #define TYPE_MI_ROUTER4 "mi-router-4"
@@ -87,8 +90,13 @@ static const hwaddr mt7621_memmap[] = {
 struct MT7621SoCState {
     DeviceState parent_obj;
     MIPSCPU *cpu;
-    SerialMM uart[3];
-    mt7621NfcState nfc;
+    /*
+     * SerialMM is only forward-declared by hw/char/serial-mm.h in 9.2
+     * (the struct definition lives in that header, but the device is
+     * always realized through qdev), so hold pointers rather than values.
+     */
+    SerialMM *uart[3];
+    SysBusDevice *nfc;
     hwaddr memmap[sizeof(mt7621_memmap) / sizeof(hwaddr)];
 };
 
@@ -100,9 +108,11 @@ static void mt7621_soc_init(Object *obj)
         s->memmap[i] = mt7621_memmap[i];
     }
     for (int i = 0; i < 3; i++) {
-        object_initialize_child(obj, "uart[*]", &s->uart[i], TYPE_SERIAL_MM);
+        s->uart[i] = SERIAL_MM(qdev_new(TYPE_SERIAL_MM));
+        object_property_add_child(obj, "uart[*]", OBJECT(s->uart[i]));
     }
-    object_initialize_child(obj, "nfc", &s->nfc, TYPE_MT7621_NFC);
+    s->nfc = SYS_BUS_DEVICE(qdev_new(TYPE_MT7621_NFC));
+    object_property_add_child(obj, "nfc", OBJECT(s->nfc));
 }
 
 static void mt7621_soc_realize(DeviceState *dev, Error **errp)
@@ -114,25 +124,38 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
     /* MT7621 runs at 1GHz nominal; the exact rate only affects timeouts. */
     clock_set_hz(cpuclk, 1000000000);
 
-    s->cpu = mips_cpu_create_with_clock(MIPS_CPU_TYPE_NAME("24KEc"), cpuclk);
+    /* QEMU 9.2 added the endianness argument to mips_cpu_create_with_clock. */
+    s->cpu = mips_cpu_create_with_clock(MIPS_CPU_TYPE_NAME("24KEc"), cpuclk,
+                                        TARGET_BIG_ENDIAN);
     cpu_mips_irq_init_cpu(s->cpu);
     cpu_mips_clock_init(s->cpu);
 
     /* NAND flash controller */
-    sysbus_realize(SYS_BUS_DEVICE(&s->nfc), errp);
-    sysbus_mmio_map(SYS_BUS_DEVICE(&s->nfc), 0, s->memmap[DEV_NFI]);
-    sysbus_mmio_map(SYS_BUS_DEVICE(&s->nfc), 1, s->memmap[DEV_NFI_ECC]);
+    sysbus_realize(s->nfc, errp);
+    sysbus_mmio_map(s->nfc, 0, s->memmap[DEV_NFI]);
+    sysbus_mmio_map(s->nfc, 1, s->memmap[DEV_NFI_ECC]);
 
     /* three 16550 UARTs with a 2-bit register shift */
     for (int i = 0; i < 3; i++) {
-        qdev_prop_set_chr(DEVICE(&s->uart[i]), "chardev", serial_hd(i));
-        qdev_prop_set_uint8(DEVICE(&s->uart[i]), "regshift", 2);
-        sysbus_realize(SYS_BUS_DEVICE(&s->uart[i]), &error_abort);
-        sysbus_mmio_map(SYS_BUS_DEVICE(&s->uart[i]), 0,
+        qdev_prop_set_chr(DEVICE(s->uart[i]), "chardev", serial_hd(i));
+        qdev_prop_set_uint8(DEVICE(s->uart[i]), "regshift", 2);
+        qdev_prop_set_uint8(DEVICE(s->uart[i]), "endianness",
+                            TARGET_BIG_ENDIAN ? DEVICE_BIG_ENDIAN
+                                              : DEVICE_LITTLE_ENDIAN);
+        sysbus_realize(SYS_BUS_DEVICE(s->uart[i]), &error_abort);
+        sysbus_mmio_map(SYS_BUS_DEVICE(s->uart[i]), 0,
                         s->memmap[DEV_UART1 + i]);
     }
-    /* SPL and early U-Boot write their console to the 0xbe000c00 alias */
-    sysbus_mmio_map(SYS_BUS_DEVICE(&s->uart[0]), 1, s->memmap[DEV_DBG_UART]);
+    /*
+     * SPL and early U-Boot write their console to the 0xbe000c00 alias.
+     * serial-mm only publishes a single MMIO region (index 0), so the
+     * alias is a second mapping of that same region rather than a second
+     * sysbus region.
+     */
+    memory_region_add_subregion(get_system_memory(), s->memmap[DEV_DBG_UART],
+                                memory_region_ref(
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(s->uart[0]), 0)));
 
     /*
      * Everything else is modelled as unimplemented: the register reads return
@@ -218,7 +241,8 @@ static void mi_router4_cpu_reset(void *opaque)
 static bool load_spl_from_nand(MachineState *machine, MT7621SoCState *soc,
                                hwaddr *entry_out)
 {
-    BlockBackend *blk = soc->nfc.blk;
+    mt7621NfcState *nfc = MT7621_NFC(soc->nfc);
+    BlockBackend *blk = nfc->conf.blk;
     uint8_t hdr[0x40];
     uint32_t magic, size, load, entry;
     int64_t got;
@@ -292,13 +316,13 @@ static void mi_router4_init(MachineState *machine)
     /* the NAND dump is an IF_MTD drive, the same one U-Boot will read */
     dinfo = drive_get(IF_MTD, 0, 0);
     if (dinfo) {
-        qdev_prop_set_drive(DEVICE(&soc->nfc), "drive",
+        qdev_prop_set_drive(DEVICE(soc->nfc), "drive",
                             blk_by_legacy_dinfo(dinfo));
     }
 
     qdev_realize(DEVICE(soc), NULL, &error_abort);
 
-    /* MT7621 DDR starts at physical 0 */
+    /* MT7621 DDR starts at physical 0; machines map machine->ram themselves */
     memory_region_add_subregion(get_system_memory(), 0, machine->ram);
 
     if (!load_spl_from_nand(machine, soc, &entry)) {
