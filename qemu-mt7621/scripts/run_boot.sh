@@ -24,9 +24,8 @@ echo "   limit : ${SECS}s"
 rm -f "$LOG"
 timeout "$SECS" \
     "$QEMU" \
-    -M mi-router-4 \
+    -M mi-router-4,flash="$FLASH" \
     -m 128 \
-    -drive if=mtd,file="$FLASH",format=raw \
     -nographic \
     -no-reboot \
     -serial mon:stdio \
