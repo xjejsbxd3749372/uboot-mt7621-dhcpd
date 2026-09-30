@@ -93,7 +93,25 @@ fi
 # ---------------------------------------------------------------- default devices
 # These CONFIG_ names are resolved by minikconf against the Kconfig symbols
 # declared above; they have to agree exactly.
-DEVCONF="$SRC/configs/devices/mips-softmmu/default.mak"
+#
+# IMPORTANT: meson reads configs/devices/<TARGET>/default.mak where <TARGET> is
+# the *endianness-qualified* softmmu name (e.g. "mipsel-softmmu"), not the
+# architecture-only "mips-softmmu" directory that merely holds common.mak.
+# Appending to the wrong one silently produces a config with no MT7621 symbols,
+# so the model is never compiled and the machine never gets registered.
+# Derive the name from --target-list below rather than hardcoding it.
+DEVCONF=""
+for t in mipsel-softmmu mips-softmmu mips64el-softmmu mips64-softmmu; do
+    if [ -f "$SRC/configs/devices/$t/default.mak" ]; then
+        DEVCONF="$SRC/configs/devices/$t/default.mak"
+        break
+    fi
+done
+if [ -z "$DEVCONF" ]; then
+    echo "ERROR: no mips devices default.mak found under configs/devices" >&2
+    exit 1
+fi
+echo "-- device config: $DEVCONF"
 if ! grep -q "CONFIG_MT7621_MI_ROUTER4" "$DEVCONF"; then
     cat >> "$DEVCONF" <<'EOF'
 CONFIG_MT7621_MI_ROUTER4=y
@@ -107,7 +125,12 @@ fi
 echo "-- configuring"
 mkdir -p "$BUILD"
 cd "$BUILD"
-if [ ! -f build.ninja ]; then
+# Reconfigure whenever the generated device config is missing our symbols.
+# A tree restored from actions/cache keeps the *old* mipsel-softmmu-config-
+# devices.mak, so `ninja` alone would happily link a binary with no model in
+# it. Always re-run configure when the wiring is fresh.
+if [ ! -f build.ninja ] || \
+   ! grep -q "MT7621" mipsel-softmmu-config-devices.mak 2>/dev/null; then
     "$SRC/configure" \
         --target-list=mipsel-softmmu \
         --disable-docs \
@@ -117,14 +140,23 @@ if [ ! -f build.ninja ]; then
         --disable-cap-ng \
         --disable-fdt \
         --disable-werror
+else
+    echo "-- reusing existing configure (MT7621 symbols already present)"
 fi
 
-# If the model symbols did not survive minikconf, the machine is silently
-# absent from the binary. Fail here with a clear message instead.
-if [ -f "$BUILD/mipsel-softmmu-config-devices.mak" ]; then
-    echo "-- generated MT7621 device config:"
-    grep -E "MT7621" "$BUILD/mipsel-softmmu-config-devices.mak" | sed 's/^/     /' \
-        || echo "     ERROR: no MT7621 symbols in the generated config" >&2
+# If the model symbols did not survive minikconf, the sources are never
+# compiled and the machine is silently absent from the binary. Fail loudly
+# here instead of letting the final -M help check be the only signal.
+if [ ! -f mipsel-softmmu-config-devices.mak ]; then
+    echo "ERROR: mipsel-softmmu-config-devices.mak was not generated" >&2
+    exit 1
+fi
+echo "-- generated MT7621 device config:"
+grep -E "MT7621" mipsel-softmmu-config-devices.mak | sed 's/^/     /'
+if ! grep -q "CONFIG_MT7621_SOC=y" mipsel-softmmu-config-devices.mak; then
+    echo "ERROR: CONFIG_MT7621_SOC is not set in the generated config;" >&2
+    echo "       the Kconfig symbols and the devices default.mak disagree." >&2
+    exit 1
 fi
 
 # ---------------------------------------------------------------- build
