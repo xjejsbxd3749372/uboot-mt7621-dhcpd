@@ -41,23 +41,6 @@ install -m 0644 "$HERE/hw/mips/mt7621.c" \
     "$SRC/hw/mips/mt7621.c"
 echo "-- installed model sources"
 
-# ---------------------------------------------------------------- meson wiring
-# hw/misc/meson.build
-if ! grep -q "mt7621-nfc.c" "$SRC/hw/misc/meson.build"; then
-    cat >> "$SRC/hw/misc/meson.build" <<'EOF'
-system_ss.add(when: 'CONFIG_MT7621_NFC', if_true: files('mt7621-nfc.c'))
-EOF
-    echo "-- wired hw/misc/meson.build"
-fi
-
-# hw/mips/meson.build
-if ! grep -q "files('mt7621.c')" "$SRC/hw/mips/meson.build"; then
-    cat >> "$SRC/hw/mips/meson.build" <<'EOF'
-mips_ss.add(when: 'CONFIG_MT7621', if_true: files('mt7621.c'))
-EOF
-    echo "-- wired hw/mips/meson.build"
-fi
-
 # ---------------------------------------------------------------- Kconfig wiring
 # The unimplemented-device Kconfig symbol was renamed across QEMU releases,
 # so pick whichever name this tree actually uses.
@@ -67,31 +50,55 @@ if grep -q "^config HW_MISC_UNIMP" "$SRC/hw/misc/Kconfig" 2>/dev/null; then
 fi
 echo "-- using UNIMP symbol: $UNIMP_SYM"
 
-if ! grep -q "MIPS_MT7621" "$SRC/hw/mips/Kconfig"; then
+# NOTE: these symbol names MUST match the CONFIG_* lines appended to
+# configs/devices/mips-softmmu/default.mak below. minikconfig resolves the
+# .mak against the Kconfig tree and aborts the whole configure step with
+# "undefined symbol" if any name is not declared, which leaves the model
+# sources silently never compiled.
+if ! grep -q "MT7621_SOC" "$SRC/hw/mips/Kconfig"; then
     cat >> "$SRC/hw/mips/Kconfig" <<EOF
 
 config MT7621_NFC
     bool
 
-config MIPS_MT7621
+config MT7621_SOC
     bool
-    select SERIAL
+    select SERIAL_MM
     select $UNIMP_SYM
 
-config MIPS_MI_ROUTER4
+config MT7621_MI_ROUTER4
     bool
-    select MIPS_MT7621
+    select MT7621_SOC
 EOF
     echo "-- wired hw/mips/Kconfig"
 fi
 
+# ---------------------------------------------------------------- meson wiring
+# hw/misc/meson.build -- the NAND controller
+if ! grep -q "mt7621-nfc.c" "$SRC/hw/misc/meson.build"; then
+    cat >> "$SRC/hw/misc/meson.build" <<'EOF'
+system_ss.add(when: 'CONFIG_MT7621_NFC', if_true: files('mt7621-nfc.c'))
+EOF
+    echo "-- wired hw/misc/meson.build"
+fi
+
+# hw/mips/meson.build -- the SoC + machine
+if ! grep -q "files('mt7621.c')" "$SRC/hw/mips/meson.build"; then
+    cat >> "$SRC/hw/mips/meson.build" <<'EOF'
+mips_ss.add(when: 'CONFIG_MT7621_SOC', if_true: files('mt7621.c'))
+EOF
+    echo "-- wired hw/mips/meson.build"
+fi
+
 # ---------------------------------------------------------------- default devices
+# These CONFIG_ names are resolved by minikconf against the Kconfig symbols
+# declared above; they have to agree exactly.
 DEVCONF="$SRC/configs/devices/mips-softmmu/default.mak"
-if ! grep -q "CONFIG_MI_ROUTER4" "$DEVCONF"; then
+if ! grep -q "CONFIG_MT7621_MI_ROUTER4" "$DEVCONF"; then
     cat >> "$DEVCONF" <<'EOF'
+CONFIG_MT7621_MI_ROUTER4=y
+CONFIG_MT7621_SOC=y
 CONFIG_MT7621_NFC=y
-CONFIG_MT7621=y
-CONFIG_MI_ROUTER4=y
 EOF
     echo "-- wired $DEVCONF"
 fi
@@ -112,14 +119,23 @@ if [ ! -f build.ninja ]; then
         --disable-werror
 fi
 
+# If the model symbols did not survive minikconf, the machine is silently
+# absent from the binary. Fail here with a clear message instead.
+if [ -f "$BUILD/mipsel-softmmu-config-devices.mak" ]; then
+    echo "-- generated MT7621 device config:"
+    grep -E "MT7621" "$BUILD/mipsel-softmmu-config-devices.mak" | sed 's/^/     /' \
+        || echo "     ERROR: no MT7621 symbols in the generated config" >&2
+fi
+
 # ---------------------------------------------------------------- build
 echo "-- building (this takes a while)"
 ninja -j"$(nproc)"
 
 echo "== built =="
 ls -l "$BUILD/qemu-system-mipsel"
-"$BUILD/qemu-system-mipsel" -M help | grep -i "mi-router-4" && \
-    echo "machine registered OK" || {
-        echo "ERROR: machine mi-router-4 not registered" >&2
-        exit 1
-    }
+if "$BUILD/qemu-system-mipsel" -M help 2>/dev/null | grep -q "mi-router-4"; then
+    echo "machine registered OK"
+else
+    echo "ERROR: machine mi-router-4 not registered" >&2
+    exit 1
+fi
