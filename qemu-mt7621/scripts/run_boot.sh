@@ -2,102 +2,109 @@
 #
 # Run the simulated Mi Router 4 boot and grade the serial log.
 #
-#   scripts/run_boot.sh <qemu-binary> <flash.bin> [seconds] [logfile]
+#   scripts/run_boot.sh <qemu-binary> <flash.bin> [seconds] [logfile] [min_level]
 #
-# Grades against the levels of a real boot:
-#   L1  QEMU starts and the machine is accepted
-#   L2  SPL runs (any output from the bootloader at all)
-#   L3  main U-Boot banner + NAND/MTD probe
-#   L4  a Linux boot message
+#   seconds=0  skip the run and grade an existing logfile only
+#
+# Grades against what a real boot produces:
+#   L1  any bootloader output on the console
+#   L2  SPL stage text (DRAM / NAND init)
+#   L3  the main U-Boot banner reached
+#   L4  a Linux boot message (kernel handed control)
+#
+# Exits non-zero when the grade is below min_level (default 3), so a boot that
+# never happened fails CI instead of reporting success.
 set -uo pipefail
 
 QEMU="${1:?qemu binary}"
 FLASH="${2:?composed flash image}"
-SECS="${3:-60}"
+SECS="${3:-90}"
 LOG="${4:-boot.log}"
+MIN_LEVEL="${5:-3}"
 
-echo "== simulated boot =="
-echo "   qemu  : $QEMU"
-echo "   flash : $FLASH ($(stat -c%s "$FLASH")B)"
-echo "   limit : ${SECS}s"
+if [ "$SECS" != "0" ]; then
+    echo "== simulated boot =="
+    echo "   qemu  : $QEMU"
+    echo "   flash : $FLASH ($(stat -c%s "$FLASH" 2>/dev/null || echo '?')B)"
+    echo "   limit : ${SECS}s"
 
-rm -f "$LOG"
-timeout "$SECS" \
-    "$QEMU" \
-    -M mi-router-4,flash="$FLASH" \
-    -m 128 \
-    -nographic \
-    -no-reboot \
-    -serial mon:stdio \
-    -d guest_errors,unimp \
-    > "$LOG" 2>&1
-rc=$?
+    rm -f "$LOG"
+    timeout "$SECS" \
+        "$QEMU" \
+        -M mi-router-4,flash="$FLASH" \
+        -m 128 \
+        -nographic \
+        -no-reboot \
+        -serial mon:stdio \
+        -d guest_errors,unimp \
+        > "$LOG" 2>&1
+    echo "-- qemu exit: $? (124 = hit the ${SECS}s limit, expected)"
+else
+    echo "== grading existing log: $LOG =="
+fi
 
-echo "-- exit code: $rc (124 = timeout, expected)"
+[ -f "$LOG" ] || { echo "ERROR: no log at $LOG" >&2; exit 1; }
 echo "=================== serial log ==================="
 cat "$LOG"
 echo "==================================================="
 
-# ---------------------------------------------------------------- grading
-grade() {
-    local level=0
+# ---------------------------------------------------------------- grade phase
+level=0
 
-    if grep -qE "MT7621|Mi Router 4" "$LOG" 2>/dev/null; then :; fi
+if grep -qE "U-Boot 20[0-9]{2}\.|U-Boot SPL|Ralink|MIPS|DRAM|NAND|MTK" "$LOG"; then
+    level=1
+    echo "PASS L1: bootloader produced console output"
+else
+    echo "FAIL L1: no bootloader output on the serial console"
+    echo "      last log lines:"
+    tail -5 "$LOG" | sed 's/^/      /'
+fi
 
-    # L2: the SPL or U-Boot printed anything at all
-    if [ -s "$LOG" ] && grep -qE "U-Boot|SPL|MTK|Ralink|DRAM|NAND" "$LOG"; then
+if [ "$level" -ge 1 ]; then
+    if grep -qE "DRAM|dram|NAND:|nand:|Uncompress|SPL" "$LOG"; then
         level=2
-        echo "PASS L2: bootloader produced output"
+        echo "PASS L2: SPL stage ran (DRAM/NAND/init text present)"
     else
-        echo "FAIL L1: no bootloader output on the serial console"
-        echo "      last log lines:"
-        tail -5 "$LOG" | sed 's/^/      /'
-        echo "$level"
-        return
+        echo "FAIL L2: no SPL-stage text"
     fi
+fi
 
-    # L3: main U-Boot banner and the MTD/NAND probe
+if [ "$level" -ge 2 ]; then
     if grep -qE "U-Boot 20[0-9]{2}\." "$LOG"; then
         level=3
         echo "PASS L3: main U-Boot banner reached"
     else
-        echo "PARTIAL: SPL ran but no main U-Boot banner (stuck in SPL)"
-        tail -15 "$LOG" | sed 's/^/      /'
-        echo "$level"
-        return
+        echo "FAIL L3: SPL ran but the main U-Boot banner never appeared"
+        echo "      last 20 log lines:"
+        tail -20 "$LOG" | sed 's/^/      /'
     fi
+fi
 
-    if grep -qiE "nand|mtd" "$LOG"; then
-        echo "PASS L3: NAND/MTD probe produced output"
-    else
-        echo "PARTIAL: U-Boot up but no NAND/MTD probe output"
-    fi
+if [ "$level" -ge 3 ] && grep -qE "Linux version|Booting Linux|Starting kernel" "$LOG"; then
+    level=4
+    echo "PASS L4: Linux kernel started"
+else
+    echo "FAIL L4: no Linux boot message"
+fi
 
-    # L4: Linux started
-    if grep -qE "Linux version|Booting Linux|Starting kernel" "$LOG"; then
-        level=4
-        echo "PASS L4: Linux kernel started"
-    fi
-
-    echo "$level"
-}
-
-LEVEL="$(grade | tee /dev/stderr | tail -1)"
+# ---------------------------------------------------------------- diagnostics
+if grep -qE "Unsupported|access to addr|LOG_GUEST_ERROR|no flash image|qemu: fatal" "$LOG"; then
+    echo "-- guest errors / fatal (first 15):"
+    grep -E "Unsupported|access to addr|no flash image|qemu: fatal" "$LOG" \
+        | head -15 | sed 's/^/   /'
+fi
 
 echo
-echo "== simulated boot reached level ${LEVEL} =="
-case "$LEVEL" in
+echo "== simulated boot reached level ${level} (need >= ${MIN_LEVEL}) =="
+case "$level" in
     4) echo "   full boot chain observed" ;;
-    3) echo "   U-Boot up and reading NAND; kernel not handed control" ;;
+    3) echo "   U-Boot up and talking to NAND; kernel not handed control" ;;
     2) echo "   SPL only; main U-Boot not reached" ;;
     *) echo "   no bootloader output" ;;
 esac
 
-# Guest errors are worth surfacing even on success.
-if grep -qE "Unsupported|access to addr|LOG_GUEST_ERROR" "$LOG"; then
-    echo
-    echo "-- guest errors observed (first 10):"
-    grep -E "Unsupported|access to addr" "$LOG" | head -10 | sed 's/^/   /'
+if [ "$level" -lt "$MIN_LEVEL" ]; then
+    echo "RESULT: FAIL (level $level < $MIN_LEVEL)" >&2
+    exit 1
 fi
-
-exit 0
+echo "RESULT: PASS (level $level >= $MIN_LEVEL)"
