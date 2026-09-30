@@ -287,6 +287,65 @@ validate() {
     57600|115200) :;;
     *) echo "Error: baudrate only supports 57600 or 115200"; exit 1;;
   esac
+
+  # Bootloader partition sanity: the (u-boot) partition must be declared,
+  # because the built u-boot.img (SPL + LZMA payload) is written into it and
+  # must not overflow it (overflow = bricked board, no serial recovery).
+  if ! echo -n "${MTDPARTS}" | grep -Eq '\(u-boot\)[[:space:]]*([,]|$)'; then
+    echo "Error: MTD partition table must include a (u-boot) partition, e.g.: ${DEFAULT_MTDPARTS}"
+    exit 1
+  fi
+}
+
+# Bytes of the (u-boot) bootloader partition, parsed from MTDPARTS.
+# MTDPARTS entries look like "512k(u-boot)". Returns 0 if not found.
+uboot_part_bytes() {
+  local tok size num unit
+  tok="$(echo -n "${MTDPARTS}" | tr ',' '\n' | grep '(u-boot)' | head -1)"
+  [ -z "${tok}" ] && { echo 0; return; }
+  size="${tok%%(*}"            # e.g. 512k
+  num="${size%[kKmM]}"
+  unit="${size: -1}"
+  case "${unit,,}" in
+    k) echo $(( num * 1024 )) ;;
+    m) echo $(( num * 1024 * 1024 )) ;;
+    *) echo "${num}" ;;
+  esac
+}
+
+# Enforce that the built bootloader image fits in its MTD partition.
+# Inspects archive/u-boot_*.img (the flashable SPL+payload image). Fails the
+# build if any exceeds the (u-boot) partition size, so an oversized image can
+# never reach a device.
+check_uboot_partition_fit() {
+  local limit img size tag
+  limit="$(uboot_part_bytes)"
+  if [ "${limit}" -le 0 ]; then
+    echo "Note: could not parse (u-boot) partition size from MTDPARTS; skipping size guard."
+    return 0
+  fi
+  echo "======================================================================"
+  echo "Checking u-boot bootloader image size (limit ${limit} bytes = (u-boot) partition)"
+  echo "======================================================================"
+  # The full image is u-boot_<tag>_md5-*.img (NOT the small u-boot-mt7621_*.bin SPL).
+  local any=0
+  for img in archive/u-boot_*_md5-*.img; do
+    [ -e "${img}" ] || continue
+    any=1
+    size="$(stat -c%s "${img}")"
+    if [ "${size}" -ge "${limit}" ]; then
+      echo "FAIL: ${img} is ${size} bytes >= ${limit}-byte (u-boot) partition."
+      echo "      The bootloader would not fit; board would be bricked."
+      echo "      Shrink the image (features/debug) or enlarge the (u-boot) partition."
+      return 1
+    else
+      echo "OK:   ${img} is ${size} bytes (< ${limit})."
+    fi
+  done
+  if [ "${any}" -eq 0 ]; then
+    echo "Note: no archive/u-boot_*_md5-*.img found; nothing to check."
+  fi
+  return 0
 }
 
 interactive() {
@@ -392,6 +451,12 @@ main() {
                  "${SYSLED_PIN}" "${CPUFREQ}" "${RAMFREQ}" "${DDRPARM}" "${BAUDRATE}" "${MODEL}" "${BOARD_NAME}" "${OLDPARAM}" "${WPS_PIN}" "${SYSLED2_PIN}"
   echo "======================================================================"
   echo "Build complete. If successful, artifacts are located in ./archive/ ."
+  echo "======================================================================"
+
+  # Hard gate: the flashable bootloader image must fit its (u-boot) MTD
+  # partition. Fails the build (non-zero exit) otherwise, so an oversized
+  # image can never be shipped to a board that cannot be re-flashed.
+  check_uboot_partition_fit
 }
 
 main "$@"
