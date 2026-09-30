@@ -57,38 +57,61 @@ jobs:
           echo "dump: $(stat -c%s full.bin)B"
           echo "has_dump=$([ -s full.bin ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      - name: fetch the U-Boot build under test
+      - name: fetch the U-Boot builds under test
         run: |
           set -euo pipefail
-          # The flash-ready image is the BINMAN output: it is the only
-          # artefact that contains both stages - the SPL uImage at 0x0 and the
-          # LZMA U-Boot payload at 0x20000. The plain `u-boot_*.img` asset is
-          # just mkimage(u-boot.bin) and has no first stage, so BootROM would
-          # never reach a main U-Boot banner from it.
-          url=$(gh api repos/${{ github.repository }}/releases/latest \
-                --jq '.assets[] | select(.name|test("^u-boot-mt7621_.*\\.bin$")) | .browser_download_url' \
-                | head -1)
-          if [ -z "$url" ]; then
-            echo "::warning::no u-boot-mt7621_*.bin asset; falling back to u-boot_*.img"
-            url=$(gh api repos/${{ github.repository }}/releases/latest \
-                  --jq '.assets[] | select(.name|test("^u-boot_.*\\.img$")) | .browser_download_url' \
-                  | head -1)
+          # Two artefacts are booted. The flash-ready one is the BINMAN
+          # output: it is the only file containing both stages - the SPL uImage
+          # at 0x0 and the LZMA U-Boot payload at 0x20000 - and it is what the
+          # hardware actually runs, so it decides pass/fail. The plain
+          # `u-boot_*.img` is just mkimage(u-boot.bin) with no first stage; it
+          # is booted afterwards as a comparison, because if it reaches a
+          # banner while the real chain does not, the problem is in the SPL
+          # stage rather than in U-Boot itself.
+          gh api repos/${{ github.repository }}/releases/latest \
+            --jq '.assets[] | select(.name|test("^u-boot-mt7621_.*\\.bin$"))
+                  | .browser_download_url' | head -1 > flash.url
+          gh api repos/${{ github.repository }}/releases/latest \
+            --jq '.assets[] | select(.name|test("^u-boot_.*\\.img$"))
+                  | .browser_download_url' | head -1 > main.url
+
+          [ -s flash.url ] || { echo "::error::no u-boot-mt7621_*.bin asset"; exit 1; }
+          [ -s main.url ] || echo "::warning::no u-boot_*.img asset, skipping the comparison boot"
+
+          curl -sSL --max-time 300 -o u-boot-flash.bin "$(cat flash.url)"
+          echo "flash image : u-boot-flash.bin $(stat -c%s u-boot-flash.bin)B"
+          if [ -s main.url ]; then
+            curl -sSL --max-time 300 -o u-boot-main.img "$(cat main.url)"
+            echo "main u-boot : u-boot-main.img $(stat -c%s u-boot-main.img)B"
           fi
-          echo "u-boot asset: $url"
-          curl -sSL --max-time 300 -o u-boot.img "$url"
-          echo "u-boot: $(stat -c%s u-boot.img)B"
 
-      - name: compose the 128MiB flash image
+      - name: compose the 128MiB flash images
         run: |
+          set -euo pipefail
           python3 qemu-mt7621/scripts/compose_flash.py \
-            -o flash.bin --uboot u-boot.img --dump full.bin
+            -o flash.bin --uboot u-boot-flash.bin --dump full.bin
           sha256sum flash.bin
+          if [ -f u-boot-main.img ]; then
+            python3 qemu-mt7621/scripts/compose_flash.py \
+              -o flash-main.bin --uboot u-boot-main.img --dump full.bin
+          fi
 
-      - name: run and grade the simulated boot
+      - name: run and grade the simulated boot (SPL + payload)
         run: |
           bash qemu-mt7621/scripts/run_boot.sh \
             /tmp/qemu-mt7621-build/build/qemu-system-mipsel \
             flash.bin 90 boot.log 3
+
+      - name: comparison boot (main U-Boot only, informational)
+        if: always()
+        run: |
+          if [ -f flash-main.bin ]; then
+            bash qemu-mt7621/scripts/run_boot.sh \
+              /tmp/qemu-mt7621-build/build/qemu-system-mipsel \
+              flash-main.bin 90 boot-main.log 3 || true
+          else
+            echo "no main-U-Boot image to compare against"
+          fi
 
       - name: upload artefacts
         if: always()
@@ -97,4 +120,5 @@ jobs:
           name: mt7621-boot
           path: |
             boot.log
+            boot-main.log
           if-no-files-found: warn
