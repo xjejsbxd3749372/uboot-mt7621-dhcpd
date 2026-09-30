@@ -14,6 +14,7 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 #include "qemu/log.h"
 #include "hw/char/serial.h"
 #include "hw/char/serial-mm.h"
@@ -142,6 +143,7 @@ struct MT7621SoCState {
      */
     SerialMM *uart[3];
     SysBusDevice *nfc;
+    QEMUTimer *pc_sample;
     MemoryRegion flash_mmap_mr;
     MT7621Scratch scratch[MT7621_N_SCRATCH];
     MemoryRegion scratch_mr[MT7621_N_SCRATCH];
@@ -229,6 +231,34 @@ static const MemoryRegionOps mt7621_scratch_ops = {
 };
 
 
+
+/*
+ * Execution sampler.
+ *
+ * The runs that mattered were completely silent: 90s with no exception, no
+ * unmapped access and no console output. Nothing in the model's event log
+ * says where the guest actually is, and "it produced no lines" is not a
+ * diagnosis. Sampling the PC every 100ms costs ~900 short lines for the whole
+ * window and turns that into a precise answer - fixed PC means a spin loop
+ * (which address, so it can be mapped back to the SPL), moving PC means it is
+ * progressing quietly, PC in RAM in the LZMA block means it is decompressing.
+ *
+ * QEMU_CLOCK_REALTIME rather than VIRTUAL so the samples keep coming even if
+ * the guest wedges in a halt.
+ */
+static void mt7621_pc_sample(void *opaque)
+{
+    MT7621SoCState *s = opaque;
+    const CPUMIPSState *env = &s->cpu->env;
+
+    fprintf(stderr,
+            "mt7621-sample: pc=" TARGET_FMT_lx " epc=" TARGET_FMT_lx
+            " status=" TARGET_FMT_lx " cause=" TARGET_FMT_lx "\n",
+            (target_ulong)env->active_tc.PC, (target_ulong)env->CP0_EPC,
+            (target_ulong)env->CP0_Status, (target_ulong)env->CP0_Cause);
+    timer_mod(s->pc_sample,
+              qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 100 * 1000000ULL);
+}
 
 static void mt7621_soc_init(Object *obj)
 {
@@ -347,6 +377,12 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
                                     mt7621_scratch_map[i].addr,
                                     &s->scratch_mr[i]);
     }
+
+    /* start the PC sampler; one sample every 100ms of wall time */
+    s->pc_sample = timer_new(QEMU_CLOCK_REALTIME, SCALE_NS,
+                             mt7621_pc_sample, s);
+    timer_mod(s->pc_sample, qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
+                            100 * 1000000ULL);
 
 }
 
