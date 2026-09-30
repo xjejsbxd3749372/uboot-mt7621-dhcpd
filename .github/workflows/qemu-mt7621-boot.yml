@@ -119,6 +119,6 @@ jobs:
         with:
           name: mt7621-boot
           path: |
-            boot.log
-            boot-main.log
+            boot.log.extract
+            boot-main.log.extract
           if-no-files-found: warn
