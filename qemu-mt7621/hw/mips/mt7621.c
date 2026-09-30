@@ -25,7 +25,10 @@
 #include "sysemu/reset.h"
 #include "qom/object.h"
 #include "sysemu/blockdev.h"
-#include "block/block-backend.h"
+/* BlockConf / BlockBackend are declared by hw/block/block.h in 9.2. */
+#include "hw/block/block.h"
+/* BlockBackend itself is a generated typedef; qemu/typedefs.h declares it. */
+#include "qemu/typedefs.h"
 /* MIPSCPU, MIPS_CPU_TYPE_NAME, cpu_mips_*_init() live in the target headers,
  * which are on the include path for sources in mips_ss (see malta.c). */
 #include "target/mips/cpu.h"
