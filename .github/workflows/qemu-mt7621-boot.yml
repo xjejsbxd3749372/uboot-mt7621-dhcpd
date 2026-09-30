@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           url=$(gh api repos/${{ github.repository }}/releases/latest \
-                --jq '.assets[] | select(.name|test("^u-boot_.*\\.img$")) | .browser_download_url' \
+                --jq '.assets[] | select(.name|test("^(u-boot_.*|u-boot-combined)\\.img$")) | .browser_download_url' \
                 | head -1)
           echo "u-boot asset: $url"
           curl -sSL --max-time 300 -o u-boot.img "$url"
@@ -74,8 +74,7 @@ jobs:
         run: |
           set -uo pipefail
           /tmp/qemu-mt7621-build/build/qemu-system-mipsel \
-            -M mi-router-4 -m 128 \
-            -drive if=mtd,file=flash.bin,format=raw \
+            -M mi-router-4,flash=flash.bin -m 128 \
             -nographic -no-reboot -serial mon:stdio \
             -d guest_errors,unimp \
             > boot.log 2>&1 &
