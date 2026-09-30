@@ -12,8 +12,10 @@
 #include "qom/object.h"
 #include "hw/sysbus.h"
 #include "exec/memory.h"
+/* QEMU 9.2 has no public include/block/block-backend.h; BlockConf (and the
+ * BlockBackend typedef) are declared by hw/block/block.h, which forwards to
+ * system/block-backend-common.h. */
 #include "hw/block/block.h"
-#include "block/block-backend.h"
 
 /* MT7621 NAND geometry as configured for Mi Router 4 (128MB SPI-NAND). */
 #define MT7621_NFC_PAGE_SIZE      2048
