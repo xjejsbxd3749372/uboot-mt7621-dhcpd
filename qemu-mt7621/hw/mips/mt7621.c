@@ -121,8 +121,10 @@ struct MT7621SoCState {
     SerialMM *uart[3];
     SysBusDevice *nfc;
     MemoryRegion flash_mmap_mr;
-    MT7621Scratch fe;
-    MemoryRegion fe_mr;
+    MT7621Scratch peri;      /* 0x1e000000 .. 0x1e200000 */
+    MemoryRegion peri_mr;
+    MT7621Scratch cm;        /* 0x1fbc0000 .. 0x1fc00000, GIC/CPC/CDMM */
+    MemoryRegion cm_mr;
     hwaddr memmap[sizeof(mt7621_memmap) / sizeof(hwaddr)];
 };
 
@@ -273,88 +275,36 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(get_system_memory(), MT7621_FLASH_MMAP_BASE,
                                 &s->flash_mmap_mr);
 
-    /* FE window: read/write placeholder, see MT7621Scratch above */
-    s->fe.size = 0xe000;
-    s->fe.buf = g_malloc0(s->fe.size);
-    memory_region_init_io(&s->fe_mr, OBJECT(s), &mt7621_scratch_ops, &s->fe,
-                          "mt7621-fe", s->fe.size);
-    memory_region_add_subregion(get_system_memory(), s->memmap[DEV_ETH],
-                                &s->fe_mr);
-
-    /* three 16550 UARTs with a 2-bit register shift */
-    for (int i = 0; i < 3; i++) {
-        /*
-         * serial_hd() is a private helper with no stable declaration in the
-         * 9.2 headers; qemu_chr_find() (chardev/char.h) is the documented
-         * lookup. It returns NULL when the chardev was not created, which is
-         * fine - the UART just stays disconnected and the console is unused.
-         */
-        Chardev *chr = qemu_chr_find(i == 0 ? "serial0" :
-                                     i == 1 ? "serial1" : "serial2");
-        if (chr) {
-            qdev_prop_set_chr(DEVICE(s->uart[i]), "chardev", chr);
-        } else {
-            warn_report("mt7621: no chardev serial%d, UART%d will print "
-                        "nothing to the console", i, i + 1);
-        }
-        qdev_prop_set_uint8(DEVICE(s->uart[i]), "regshift", 2);
-        qdev_prop_set_uint8(DEVICE(s->uart[i]), "endianness",
-                            TARGET_BIG_ENDIAN ? DEVICE_BIG_ENDIAN
-                                              : DEVICE_LITTLE_ENDIAN);
-        sysbus_realize(SYS_BUS_DEVICE(s->uart[i]), &error_abort);
-        sysbus_mmio_map(SYS_BUS_DEVICE(s->uart[i]), 0,
-                        s->memmap[DEV_UART1 + i]);
-    }
     /*
-     * UART0 at 0x1e000c00 serves both console addresses: MIPS kseg1
-     * 0xbe000c00 translates to physical 0x1e000c00 (kseg0 and kseg1 both mask
-     * to phys = addr & 0x1fffffff) and QEMU's system_memory is indexed by
-     * physical address. So there is deliberately no region at physical
-     * 0xbe000c00 - it could never be reached - and no second mapping of the
-     * UART region either, because a MemoryRegion has exactly one container and
-     * mapping it twice trips memory_region_add_subregion_common()'s
-     * `!subregion->container' assert, aborting QEMU before any guest code runs.
+     * Two memory-backed windows cover every peripheral the SoC decodes but
+     * the model does not emulate. They are installed with priority -1, and
+     * memory_region_add_subregion_overlap() resolves "higher priority hides
+     * lower priority", so the real devices mapped above (NAND controller,
+     * UARTs) still win wherever they overlap - this only fills the gaps.
      *
-     * Everything else is modelled as unimplemented: the register reads return
-     * zero and writes are dropped. That is enough for the SPL and U-Boot to
-     * probe, and it makes a missing peripheral non-fatal instead of a bus
-     * error, which is what lets the simulated boot make progress.
+     * Memory-backed rather than create_unimplemented_device() because the
+     * SPL keeps live data in them: its initial stack is
+     * CONFIG_SYS_INIT_SP_ADDR 0xbe10d000, which is kseg1 of 0x1e10d000,
+     * inside MT7621_FE_BASE+MT7621_FE_SIZE. A write-dropping placeholder
+     * makes every saved register read back as 0, so `jr $ra` jumps to 0x0
+     * and the SPL dies on a reserved-instruction exception before reaching
+     * NAND. The same applies to the CM registers in CDMM, which the SPL
+     * probes at offset 0x2028.
      */
-    static const struct {
-        const char *name;
-        int dev;
-        hwaddr size;
-    } unimp[] = {
-        { "sysc",      DEV_SYSC,     0x100 },
-        { "wdt",       DEV_WDT,      0x100 },
-        { "gpio",      DEV_GPIO,     0x600 },
-        { "i2c",       DEV_I2C,      0x200 },
-        { "spi",       DEV_SPI,      0x100 },  /* 0x1e000b00+0x100; 0x200 would cover UART0 */
-        { "gdma",      DEV_GDMA,     0x800 },
-        { "crypto",    DEV_CRYPTO,   0x400 },
-        { "dramc",     DEV_DRAMC,    0x1000 },
-        { "sdhci",     DEV_SDHCI,    0x2000 },
-        { "pcie",      DEV_PCIE,     0x8000 },
-        { "xhci",      DEV_XHCI,     0x2000 },
-        { "usb-phy",   DEV_USB_PHY,  0x2000 },
-        { "gic",       DEV_GIC,      0x20000 },
-        { "cpc",       DEV_CPC,      0x2000 },
-        /*
-         * CDMM must reach 0x1fc00000: the SPL reads CM registers through it
-         * (arch/mips/mach-mt7621/spl/start.S: lw t1, 0x2028(t0) with
-         * t0 = CKSEG1ADDR(0x1fbf8000)). At the original 0x2000 size that
-         * read at 0x1fbfa028 fell off the end and raised
-         * "Invalid read at addr 0x1FBFA028 ... data bus error" before the
-         * SPL ever reached the NAND driver. 0x8000 ends exactly at the
-         * flash-mmap window, so it cannot overlap it.
-         */
-        { "cdmm",      DEV_CDMM,     0x8000 },
-    };
+    s->peri.size = 0x200000;                    /* 0x1e000000 .. 0x1e200000 */
+    s->peri.buf = g_malloc0(s->peri.size);
+    memory_region_init_io(&s->peri_mr, OBJECT(s), &mt7621_scratch_ops,
+                          &s->peri, "mt7621-peripherals", s->peri.size);
+    memory_region_add_subregion_overlap(get_system_memory(), 0x1e000000,
+                                        &s->peri_mr, -1);
 
-    for (unsigned i = 0; i < ARRAY_SIZE(unimp); i++) {
-        create_unimplemented_device(unimp[i].name, s->memmap[unimp[i].dev],
-                                    unimp[i].size);
-    }
+    s->cm.size = 0x40000;                        /* 0x1fbc0000 .. 0x1fc00000 */
+    s->cm.buf = g_malloc0(s->cm.size);
+    memory_region_init_io(&s->cm_mr, OBJECT(s), &mt7621_scratch_ops, &s->cm,
+                          "mt7621-cm", s->cm.size);
+    memory_region_add_subregion_overlap(get_system_memory(), 0x1fbc0000,
+                                        &s->cm_mr, -1);
+
 }
 
 static void mt7621_soc_class_init(ObjectClass *klass, void *data)
