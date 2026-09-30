@@ -130,9 +130,19 @@ Every one of these cost a CI cycle before it was found:
   because `-serial` labels its chardev `serialN` (`system/vl.c`) and chardevs
   are registered as children of the chardevs root **by label**
   (`chardev/char.c`).
-- `sysbus_mmio_map(dev, n, ...)` needs `n` to exist: a SerialMM has one MMIO
-  region, so the `0xbe000c00` console alias has to be a second
-  `memory_region_add_subregion()` of that same region.
+- A `MemoryRegion` belongs to **exactly one** container. Mapping the UART's
+  region a second time to expose the `0xbe000c00` console address fails with
+  `system/memory.c: memory_region_add_subregion_common: Assertion
+  `!subregion->container' failed` and aborts QEMU before any guest code runs.
+  The second mapping is also pointless: MIPS kseg0/kseg1 translate to
+  `phys = addr & 0x1fffffff`, so `0xbe000c00` *is* physical `0x1e000c00`
+  where UART0 already sits, and QEMU's system_memory is indexed physically.
+  Confirmed from the firmware itself - the SPL contains exactly one
+  `0xbe000c00` constant (its `CONFIG_SYS_NS16550_COM1`).
+- `serial-mm`'s region is `8 << regshift` bytes, so `0x20` with `regshift=2`.
+  An `unimplemented` placeholder sized `0x200` at `0x1e000b00` therefore
+  covered `0x1e000c00..0x1e000d00` and shadowed UART0 and UART1. Sizes in the
+  `unimp[]` table must not overlap the devices that are really mapped.
 - **The `flash` machine property:** registering it with the generic
   `object_class_property_add(oc, "flash", "string", get, set, ...)` while
   passing `char *(*)(Object *, void *)` callbacks compiles with a warning and
