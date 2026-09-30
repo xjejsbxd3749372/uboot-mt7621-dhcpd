@@ -29,7 +29,9 @@ if [ "$SECS" != "0" ]; then
     echo "   limit : ${SECS}s"
 
     rm -f "$LOG"
-    timeout "$SECS" \
+    # The property is authoritative; the env var is the fallback for the case
+    # where machine properties are applied after mc->init.
+    MI_ROUTER4_FLASH="$FLASH" timeout "$SECS" \
         "$QEMU" \
         -M mi-router-4,flash="$FLASH" \
         -m 128 \
