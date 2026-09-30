@@ -148,6 +148,9 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
                                      i == 1 ? "serial1" : "serial2");
         if (chr) {
             qdev_prop_set_chr(DEVICE(s->uart[i]), "chardev", chr);
+        } else {
+            warn_report("mt7621: no chardev serial%d, UART%d will print "
+                        "nothing to the console", i, i + 1);
         }
         qdev_prop_set_uint8(DEVICE(s->uart[i]), "regshift", 2);
         qdev_prop_set_uint8(DEVICE(s->uart[i]), "endianness",
@@ -158,16 +161,15 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
                         s->memmap[DEV_UART1 + i]);
     }
     /*
-     * SPL and early U-Boot write their console to the 0xbe000c00 alias.
-     * serial-mm only publishes a single MMIO region (index 0), so the
-     * alias is a second mapping of that same region rather than a second
-     * sysbus region; memory_region_add_subregion() takes the ref itself.
-     */
-    memory_region_add_subregion(get_system_memory(), s->memmap[DEV_DBG_UART],
-                                sysbus_mmio_get_region(
-                                    SYS_BUS_DEVICE(s->uart[0]), 0));
-
-    /*
+     * UART0 at 0x1e000c00 serves both console addresses: MIPS kseg1
+     * 0xbe000c00 translates to physical 0x1e000c00 (kseg0 and kseg1 both mask
+     * to phys = addr & 0x1fffffff) and QEMU's system_memory is indexed by
+     * physical address. So there is deliberately no region at physical
+     * 0xbe000c00 - it could never be reached - and no second mapping of the
+     * UART region either, because a MemoryRegion has exactly one container and
+     * mapping it twice trips memory_region_add_subregion_common()'s
+     * `!subregion->container' assert, aborting QEMU before any guest code runs.
+     *
      * Everything else is modelled as unimplemented: the register reads return
      * zero and writes are dropped. That is enough for the SPL and U-Boot to
      * probe, and it makes a missing peripheral non-fatal instead of a bus
@@ -182,7 +184,7 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
         { "wdt",       DEV_WDT,      0x100 },
         { "gpio",      DEV_GPIO,     0x600 },
         { "i2c",       DEV_I2C,      0x200 },
-        { "spi",       DEV_SPI,      0x200 },
+        { "spi",       DEV_SPI,      0x100 },  /* 0x1e000b00+0x100; 0x200 would cover UART0 */
         { "gdma",      DEV_GDMA,     0x800 },
         { "crypto",    DEV_CRYPTO,   0x400 },
         { "dramc",     DEV_DRAMC,    0x1000 },
