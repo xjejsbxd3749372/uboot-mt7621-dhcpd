@@ -56,6 +56,28 @@ typedef struct MT7621Scratch {
     hwaddr size;
 } MT7621Scratch;
 
+/*
+ * Gaps that must be readable/writable for the SPL to run. Every entry is
+ * deliberately disjoint from the real devices (NAND controller at
+ * 0x1e003000..0x1e004000, UARTs at 0x1e000c00/d00/e00 + 0x20 each) and from
+ * the flash-mmap window at 0x1fc00000, so nothing overlaps and the question
+ * of which region wins never arises.
+ */
+#define MT7621_N_SCRATCH 6
+static const struct {
+    hwaddr addr;
+    hwaddr size;
+    const char *name;
+} mt7621_scratch_map[MT7621_N_SCRATCH] = {
+    { 0x1e000000, 0x000c00, "mt7621-sysc-wdt-gpio" }, /* up to UART0 */
+    { 0x1e000c20, 0x0000e0, "mt7621-uart0-tail" },    /* UART0 ends 0xc20 */
+    { 0x1e000d20, 0x0000e0, "mt7621-uart1-tail" },
+    { 0x1e000e20, 0x0021e0, "mt7621-gdma-gap" },      /* ends at NFI 0x3000 */
+    { 0x1e004000, 0x01fc000, "mt7621-fe-and-friends" }, /* to 0x1e200000 */
+    { 0x1fbc0000, 0x040000, "mt7621-cm" },            /* GIC/CPC/CDMM */
+};
+
+
 
 /* MT7621 memory map (target/linux/ramips/dts/mt7621.dtsi) */
 enum {
@@ -121,10 +143,8 @@ struct MT7621SoCState {
     SerialMM *uart[3];
     SysBusDevice *nfc;
     MemoryRegion flash_mmap_mr;
-    MT7621Scratch peri;      /* 0x1e000000 .. 0x1e200000 */
-    MemoryRegion peri_mr;
-    MT7621Scratch cm;        /* 0x1fbc0000 .. 0x1fc00000, GIC/CPC/CDMM */
-    MemoryRegion cm_mr;
+    MT7621Scratch scratch[MT7621_N_SCRATCH];
+    MemoryRegion scratch_mr[MT7621_N_SCRATCH];
     hwaddr memmap[sizeof(mt7621_memmap) / sizeof(hwaddr)];
 };
 
@@ -311,34 +331,22 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
                                 &s->flash_mmap_mr);
 
     /*
-     * Two memory-backed windows cover every peripheral the SoC decodes but
-     * the model does not emulate. They are installed with priority -1, and
-     * memory_region_add_subregion_overlap() resolves "higher priority hides
-     * lower priority", so the real devices mapped above (NAND controller,
-     * UARTs) still win wherever they overlap - this only fills the gaps.
-     *
-     * Memory-backed rather than create_unimplemented_device() because the
-     * SPL keeps live data in them: its initial stack is
-     * CONFIG_SYS_INIT_SP_ADDR 0xbe10d000, which is kseg1 of 0x1e10d000,
-     * inside MT7621_FE_BASE+MT7621_FE_SIZE. A write-dropping placeholder
-     * makes every saved register read back as 0, so `jr $ra` jumps to 0x0
-     * and the SPL dies on a reserved-instruction exception before reaching
-     * NAND. The same applies to the CM registers in CDMM, which the SPL
-     * probes at offset 0x2028.
+     * Memory-backed gaps, see MT7621Scratch above: unlike
+     * create_unimplemented_device() these keep what was written, which the
+     * SPL depends on because its initial stack (CONFIG_SYS_INIT_SP_ADDR
+     * 0xbe10d000 = kseg1 of 0x1e10d000) sits inside the FE window, and
+     * because it probes the CM registers in CDMM at offset 0x2028.
      */
-    s->peri.size = 0x200000;                    /* 0x1e000000 .. 0x1e200000 */
-    s->peri.buf = g_malloc0(s->peri.size);
-    memory_region_init_io(&s->peri_mr, OBJECT(s), &mt7621_scratch_ops,
-                          &s->peri, "mt7621-peripherals", s->peri.size);
-    memory_region_add_subregion_overlap(get_system_memory(), 0x1e000000,
-                                        &s->peri_mr, -1);
-
-    s->cm.size = 0x40000;                        /* 0x1fbc0000 .. 0x1fc00000 */
-    s->cm.buf = g_malloc0(s->cm.size);
-    memory_region_init_io(&s->cm_mr, OBJECT(s), &mt7621_scratch_ops, &s->cm,
-                          "mt7621-cm", s->cm.size);
-    memory_region_add_subregion_overlap(get_system_memory(), 0x1fbc0000,
-                                        &s->cm_mr, -1);
+    for (unsigned i = 0; i < MT7621_N_SCRATCH; i++) {
+        s->scratch[i].size = mt7621_scratch_map[i].size;
+        s->scratch[i].buf = g_malloc0(s->scratch[i].size);
+        memory_region_init_io(&s->scratch_mr[i], OBJECT(s),
+                              &mt7621_scratch_ops, &s->scratch[i],
+                              mt7621_scratch_map[i].name, s->scratch[i].size);
+        memory_region_add_subregion(get_system_memory(),
+                                    mt7621_scratch_map[i].addr,
+                                    &s->scratch_mr[i]);
+    }
 
 }
 
