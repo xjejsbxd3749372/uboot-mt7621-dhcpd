@@ -55,6 +55,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(MT7621SoCState, MT7621_SOC)
 typedef struct MT7621Scratch {
     uint8_t *buf;
     hwaddr size;
+    const char *name;
+    /* Boyer-Moore majority address: survives interleaved traffic from the
+     * stack living in the same window, while a polling loop - one register
+     * read over and over - stays dominant. */
+    hwaddr dom_addr;
+    uint64_t dom_count;
+    uint64_t n;
+    int64_t next_report;
 } MT7621Scratch;
 
 /*
@@ -198,12 +206,47 @@ static const MemoryRegionOps mt7621_flash_mmap_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 4 },
 };
 
+/*
+ * One report per region per second naming the address that dominates the
+ * traffic. This exists because the run before it was a complete blank: 90s of
+ * guest execution with no exception and no console output. Knowing the
+ * dominant address turns "it is spinning on something" into "it is spinning
+ * on this register".
+ */
+static void mt7621_scratch_touch(MT7621Scratch *sc, hwaddr addr)
+{
+    int64_t now_ms;
+
+    sc->n++;
+    if (addr == sc->dom_addr) {
+        sc->dom_count++;
+    } else if (sc->dom_count > 0) {
+        sc->dom_count--;
+    } else {
+        sc->dom_addr = addr;
+        sc->dom_count = 1;
+    }
+
+    now_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+    if (now_ms >= sc->next_report) {
+        sc->next_report = now_ms + 1000;
+        fprintf(stderr,
+                "scratch[%s]: accesses=%llu dominant=0x%llx count=%llu "
+                "last=0x%llx\n",
+                sc->name, (unsigned long long)sc->n,
+                (unsigned long long)sc->dom_addr,
+                (unsigned long long)sc->dom_count,
+                (unsigned long long)addr);
+    }
+}
+
 static uint64_t mt7621_scratch_read(void *opaque, hwaddr addr, unsigned size)
 {
     MT7621Scratch *sc = opaque;
     uint64_t v = 0;
     unsigned i;
 
+    mt7621_scratch_touch(sc, addr);
     for (i = 0; i < size; i++) {
         v |= (addr + i < sc->size) ? (uint64_t)sc->buf[addr + i] << (8 * i)
                                    : (uint64_t)0xff << (8 * i);
@@ -217,6 +260,7 @@ static void mt7621_scratch_write(void *opaque, hwaddr addr, uint64_t val,
     MT7621Scratch *sc = opaque;
     unsigned i;
 
+    mt7621_scratch_touch(sc, addr);
     for (i = 0; i < size && addr + i < sc->size; i++) {
         sc->buf[addr + i] = val >> (8 * i);
     }
@@ -369,6 +413,7 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
      */
     for (unsigned i = 0; i < MT7621_N_SCRATCH; i++) {
         s->scratch[i].size = mt7621_scratch_map[i].size;
+        s->scratch[i].name = mt7621_scratch_map[i].name;
         s->scratch[i].buf = g_malloc0(s->scratch[i].size);
         memory_region_init_io(&s->scratch_mr[i], OBJECT(s),
                               &mt7621_scratch_ops, &s->scratch[i],
