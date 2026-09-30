@@ -1,5 +1,5 @@
 --flash NAND
---mtdparts "512k(u-boot),256k(u-boot-env),256k(factory),256k(factory),256k(crash),256k(crash_syslog),256k(reserved0),4m(kernel_stock),-(firmware)"
+--mtdparts "512k(u-boot),256k(u-boot-env),256k(bdata),256k(factory),256k(crash),256k(crash_syslog),256k(reserved0),4m(kernel_stock),-(firmware)"
 --model "Xiaomi_Mi_Router_4"
 --kernel-offset 0x600000
 --reset-pin 18
