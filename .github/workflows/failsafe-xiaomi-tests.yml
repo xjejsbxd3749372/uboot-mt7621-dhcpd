@@ -6,6 +6,8 @@ on:
       - 'failsafe/**'
       - 'tests/**'
       - '.github/workflows/failsafe-xiaomi-tests.yml'
+      - 'configs-mt7621/**'
+      - 'build.sh'
   workflow_dispatch:
     inputs:
       fuzz_iters:
@@ -18,6 +20,19 @@ on:
         default: '20'
 
 jobs:
+  # Simulated boot-path alignment: walk the defconfig MTDPARTS to absolute
+  # offsets and assert every partition starts on an authoritative OpenWrt DTS
+  # boundary; then run the 512K bootloader image-size gate. Offline — no
+  # full.bin needed, so it runs in CI. (On a host with full.bin present the
+  # same script additionally byte-scans the boot chain.)
+  boot-path-scan:
+    name: boot path mtdparts/512K alignment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run the boot-path regression test
+        run: python3 tests/test_boot_path.py
+
   # Pure host-side logic: the parser, MAC, URL, JSON and clock-bound helpers.
   # Runs the copied functions under ASan+UBSan, so a read past the end of a
   # buffer fails the job instead of shipping.
