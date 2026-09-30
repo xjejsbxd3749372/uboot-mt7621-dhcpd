@@ -369,11 +369,29 @@ static void mi_router4_init(MachineState *machine)
     object_property_add_child(OBJECT(machine), "soc", OBJECT(soc));
     object_unref(OBJECT(soc));
 
-    /* give the NAND controller its image before it is realized */
-    if (mi_router4_flash_file) {
-        char *path = g_strdup(mi_router4_flash_file);
-        load_flash_image(MT7621_NFC(soc->nfc), path);
-        g_free(path);
+    /*
+     * The image path normally arrives as -M mi-router-4,flash=<path>. The
+     * MI_ROUTER4_FLASH fallback covers the case where a QEMU upgrade changes
+     * the point at which machine properties are applied relative to mc->init,
+     * so a wrong ordering costs a clear warning instead of a blank device.
+     */
+    {
+        const char *path = mi_router4_flash_file;
+        char *env = NULL;
+
+        if (!path || !*path) {
+            env = g_strdup(g_getenv("MI_ROUTER4_FLASH"));
+            path = env;
+        }
+        if (path && *path) {
+            if (!load_flash_image(MT7621_NFC(soc->nfc), path)) {
+                warn_report("mi-router-4: could not load NAND image '%s'", path);
+            }
+        } else {
+            warn_report("mi-router-4: no NAND image given "
+                        "(use -M mi-router-4,flash=<path>)");
+        }
+        g_free(env);
     }
 
     qdev_realize(DEVICE(soc), NULL, &error_abort);
@@ -392,13 +410,23 @@ static void mi_router4_init(MachineState *machine)
     qemu_register_reset(mi_router4_cpu_reset, reset);
 }
 
-static char *mi_router4_get_flash(Object *obj, void *data)
+/*
+ * -M mi-router-4,flash=<path>
+ *
+ * object_class_property_add_str() is the API that takes these signatures.
+ * The generic object_class_property_add(..., "string", ...) expects
+ * ObjectPropertyAccessor callbacks that take a Visitor; registering a
+ * char *( *)(Object *, ...) getter there compiles with a warning, the setter
+ * then never runs visit_type_str(), and QEMU aborts at
+ * qobject_input_check_struct() with "Parameter 'flash' is unexpected" -
+ * the key was never consumed by a visitor.
+ */
+static char *mi_router4_get_flash(Object *obj, Error **errp)
 {
-    return mi_router4_flash_file;
+    return g_strdup(mi_router4_flash_file);
 }
 
-static void mi_router4_set_flash(Object *obj, const char *value,
-                                 void *data, Error **errp)
+static void mi_router4_set_flash(Object *obj, const char *value, Error **errp)
 {
     g_free(mi_router4_flash_file);
     mi_router4_flash_file = g_strdup(value);
@@ -411,13 +439,8 @@ static void mi_router4_class_init(MachineClass *mc)
     mc->default_ram_size = 128 * MiB;
     mc->default_ram_id = "mi-router-4.ram";
 
-    /*
-     * Declaring a plain "flash" property auto-generates the
-     * -mt7621-flash <path> machine option.
-     */
-    object_class_property_add(mc, "flash", "string",
-                              mi_router4_get_flash, mi_router4_set_flash,
-                              NULL, mc);
+    object_class_property_add_str(OBJECT_CLASS(mc), "flash",
+                                  mi_router4_get_flash, mi_router4_set_flash);
 }
 
 DEFINE_MACHINE("mi-router-4", mi_router4_class_init)
