@@ -76,6 +76,14 @@ struct mt7621NfcState {
     /* statistics, printed on request via info properties */
     uint64_t n_page_reads;
     uint64_t n_cmds;
+
+    /*
+     * Bounded access trace. The SPL can sit in a silent NAND polling loop for
+     * the whole 90s window with no exception and no console output, which
+     * makes the run impossible to diagnose; the first few register accesses
+     * name the state machine it is stuck in.
+     */
+    uint64_t n_trace;
 };
 
 #endif /* HW_MISC_MT7621_NFC_H */
