@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Compose the 128MiB logical NAND image the MT7621 QEMU model boots from.
+
+Layout is the Mi Router 4 partition map (target/linux/ramips/dts):
+  0x000000  bootloader  512K   <- the U-Boot build under test
+  0x080000  config      256K   <- from the stock dump
+  0x0c0000  bdata       256K
+  0x100000  factory     256K   (MT7603 + MT7612 calibration)
+  0x140000  crash       256K
+  0x180000  crash_syslog 256K
+  0x1c0000  reserved0   256K
+  0x200000  kernel_stock 4M
+  0x600000  kernel      4M
+  0xa00000  ubi         rest
+
+The rest of the flash is copied verbatim from the stock dump, so only the
+bootloader region is replaced by the build under test.
+
+Usage:
+  compose_flash.py -o flash.bin --uboot u-boot.img --dump full.bin
+"""
+import argparse
+import os
+import sys
+
+NAND_SIZE = 128 * 1024 * 1024
+BOOT_SIZE = 0x80000          # bootloader partition
+STOCK_FROM = 0x80000         # everything past the bootloader
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-o", "--output", required=True)
+    ap.add_argument("--uboot", required=True,
+                    help="combined U-Boot image (SPL + main) to flash at 0x0")
+    ap.add_argument("--dump", required=True,
+                    help="stock full.bin used for the remaining partitions")
+    args = ap.parse_args()
+
+    uboot = open(args.uboot, "rb").read()
+    if uboot[:4] != b"\x27\x05\x19\x56":
+        sys.exit(f"error: {args.uboot} is not a uImage (magic {uboot[:4].hex()})")
+    if len(uboot) > BOOT_SIZE:
+        sys.exit(f"error: {args.uboot} is {len(uboot)}B, larger than the "
+                 f"{BOOT_SIZE}B bootloader partition")
+
+    stock = open(args.dump, "rb").read()
+    if len(stock) != NAND_SIZE:
+        sys.exit(f"error: {args.dump} is {len(stock)}B, expected {NAND_SIZE}B")
+
+    with open(args.output, "wb") as out:
+        out.write(uboot)
+        out.write(b"\xff" * (STOCK_FROM - len(uboot)))
+        out.write(stock[STOCK_FROM:])
+
+    print(f"composed {args.output} ({os.path.getsize(args.output)}B)")
+    print(f"  bootloader 0x0        : {len(uboot)}B (build under test)")
+    print(f"  0x{STOCK_FROM:x}..0x{NAND_SIZE:x}: {NAND_SIZE - STOCK_FROM}B "
+          f"from {os.path.basename(args.dump)}")
+
+
+if __name__ == "__main__":
+    main()
