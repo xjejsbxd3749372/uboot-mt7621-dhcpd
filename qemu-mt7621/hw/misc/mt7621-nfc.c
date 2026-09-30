@@ -14,10 +14,6 @@
 #include "qemu/module.h"
 #include "hw/qdev-properties.h"
 #include "hw/misc/mt7621-nfc.h"
-/* blk_pread() lives in the private block layer; without this declaration the
- * compiler assumes it returns int, which would truncate the 64-bit byte
- * count the NAND model compares against. */
-#include "block_int.h"
 
 /* ---- NFI register offsets (from mt7621_nand.h) ---- */
 #define NFI_CNFG_REG16      0x000
@@ -99,7 +95,7 @@ static uint64_t nfc_page_offset(uint32_t page)
 static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
 {
     uint64_t off;
-    int64_t got;
+    uint64_t len;
 
     /* erased OOB */
     memset(s->page_buf + MT7621_NFC_PAGE_SIZE, 0xff, MT7621_NFC_OOB_SIZE);
@@ -108,19 +104,22 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
     s->page_fmt = (s->cnfg >> AUTO_FMT_EN_S) & 1;
     s->n_page_reads++;
 
-    if (!s->conf.blk || col >= MT7621_NFC_PAGE_SIZE) {
+    if (!s->data || col >= MT7621_NFC_PAGE_SIZE) {
         s->page_armed = 1;
         return;
     }
 
+    /*
+     * The image is page data only, so the tail of a short read stays erased
+     * (0xff) rather than picking up whatever follows in host memory.
+     */
     off = nfc_page_offset(page);
-    got = blk_pread(s->conf.blk, MT7621_NFC_PAGE_SIZE - col, s->page_buf + col,
-                    off + col);
-    if (got < 0) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "mt7621-nfc: read error at page %u (off 0x%" PRIx64 ")\n",
-                      page, off);
+    if (off >= s->size) {
+        s->page_armed = 1;
+        return;
     }
+    len = MIN(MT7621_NFC_PAGE_SIZE - col, s->size - off - col);
+    memcpy(s->page_buf + col, s->data + off + col, len);
 
     /* Per-sector FDM registers mirror the (synthesized) OOB FDM bytes. */
     for (int i = 0; i < MT7621_NFC_ECC_STEPS; i++) {
@@ -457,20 +456,17 @@ static void nfc_realize(DeviceState *dev, Error **errp)
 {
     mt7621NfcState *s = MT7621_NFC(dev);
 
-    if (!s->conf.blk) {
-        warn_report("mt7621-nfi: no drive given, NAND reads will return 0xff");
+    if (!s->data) {
+        warn_report("mt7621-nfi: no flash image was given, "
+                    "every NAND read will return 0xff");
     }
 }
 
+/*
+ * The machine hands the loaded image over before realizing the SoC, so there
+ * is no block property to declare here - see the comment on nfc->data.
+ */
 static Property nfc_properties[] = {
-    /*
-     * QEMU 9.2 removed DEFINE_PROP_BLOCK: a bare BlockBackend can no longer
-     * be attached to a device directly. The replacement is a BlockConf
-     * member carrying the standard block property set, whose "blk" field
-     * holds the backend. See DEFINE_BLOCK_PROPERTIES in hw/block/block.h.
-     * QEMU releases it for us, so there is no unrealize hook here.
-     */
-    DEFINE_PROP_DRIVE("drive", mt7621NfcState, conf.blk),
     DEFINE_PROP_END_OF_LIST(),
 };
 
