@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/qemu-mt7621-build
-          key: qemu-mt7621-${{ env.QEMU_VERSION }}-${{ hashFiles('qemu-mt7621/**') }}
+          key: qemu-mt7621-${{ env.QEMU_VERSION }}-${{ hashFiles('qemu-mt7621/hw/**', 'qemu-mt7621/include/**', 'qemu-mt7621/scripts/build_qemu.sh') }}
 
       - name: build QEMU with the MT7621 model
         run: bash qemu-mt7621/scripts/build_qemu.sh
@@ -60,13 +60,18 @@ jobs:
       - name: fetch the U-Boot build under test
         run: |
           set -euo pipefail
+          # The flash-ready image is the BINMAN output: it is the only
+          # artefact that contains both stages - the SPL uImage at 0x0 and the
+          # LZMA U-Boot payload at 0x20000. The plain `u-boot_*.img` asset is
+          # just mkimage(u-boot.bin) and has no first stage, so BootROM would
+          # never reach a main U-Boot banner from it.
           url=$(gh api repos/${{ github.repository }}/releases/latest \
-                --jq '.assets[] | select(.name|test("^(u-boot_.*|u-boot-combined)\\.img$")) | .browser_download_url' \
+                --jq '.assets[] | select(.name|test("^u-boot-mt7621_.*\\.bin$")) | .browser_download_url' \
                 | head -1)
           if [ -z "$url" ]; then
-            # fall back to the combined SPL+U-Boot image the local build produced
+            echo "::warning::no u-boot-mt7621_*.bin asset; falling back to u-boot_*.img"
             url=$(gh api repos/${{ github.repository }}/releases/latest \
-                  --jq '.assets[] | select(.name|test("^u-boot-mt7621_.*\\.bin$")) | .browser_download_url' \
+                  --jq '.assets[] | select(.name|test("^u-boot_.*\\.img$")) | .browser_download_url' \
                   | head -1)
           fi
           echo "u-boot asset: $url"
