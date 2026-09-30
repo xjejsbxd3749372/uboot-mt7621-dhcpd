@@ -78,7 +78,7 @@ typedef struct MT7621Scratch {
  * the flash-mmap window at 0x1fc00000, so nothing overlaps and the question
  * of which region wins never arises.
  */
-#define MT7621_N_SCRATCH 7
+#define MT7621_N_SCRATCH 8
 static const struct {
     hwaddr addr;
     hwaddr size;
@@ -89,7 +89,14 @@ static const struct {
     { 0x1e000000, 0x000c00, "mt7621-sysc-wdt-gpio", 0, 0 },  /* up to UART0 */
     { 0x1e000c20, 0x0000e0, "mt7621-uart0-tail", 0, 0 },     /* ends 0xc20 */
     { 0x1e000d20, 0x0000e0, "mt7621-uart1-tail", 0, 0 },
-    { 0x1e000e20, 0x0041e0, "mt7621-gdma-gap", 0, 0 },       /* ends at DRAMC */
+    /*
+     * Every window below is chosen so it cannot overlap a real device: the
+     * NAND controller sits at 0x1e003000..0x1e004000, and letting a placeholder
+     * cover it too put two same-priority regions over one address, which
+     * corrupts the flatview section table - QEMU died in the NAND driver with
+     * physmem.c: iotlb_to_section: Assertion `section_index < d->map.sections_nb'.
+     */
+    { 0x1e000e20, 0x0021e0, "mt7621-gdma-gap", 0, 0 },       /* ends at NFI */
     /*
      * DRAMC gets its own window on purpose. The boot chain runs the legacy
      * DDR calibration blob - mt7621_stage_sram_noprint.bin, exactly 13928
@@ -99,6 +106,7 @@ static const struct {
      * dominant-address report names the register it waits on instead of being
      * drowned out by instruction fetches from the blob itself.
      */
+    { 0x1e004000, 0x001000, "mt7621-crypto-gap", 0, 0 },     /* after NFI ECC */
     { 0x1e005000, 0x001000, "mt7621-dramc", 0, 0 },
     { 0x1e006000, 0x01fa000, "mt7621-fe-and-friends", 0, 0 }, /* to 0x1e200000 */
     { 0x1fbc0000, 0x040000, "mt7621-cm", 0x3a008, 0x3c008 },
