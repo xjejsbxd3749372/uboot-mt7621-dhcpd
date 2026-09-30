@@ -268,6 +268,41 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
     sysbus_mmio_map(s->nfc, 0, s->memmap[DEV_NFI]);
     sysbus_mmio_map(s->nfc, 1, s->memmap[DEV_NFI_ECC]);
 
+    /* three 16550 UARTs with a 2-bit register shift */
+    for (int i = 0; i < 3; i++) {
+        /*
+         * serial_hd() has no declaration in the 9.2 headers; qemu_chr_find()
+         * from chardev/char.h is the documented lookup and resolves the same
+         * object, because -serial labels its chardev "serialN" and chardevs
+         * are registered as children of the chardevs root by label.
+         */
+        Chardev *chr = qemu_chr_find(i == 0 ? "serial0" :
+                                     i == 1 ? "serial1" : "serial2");
+        if (chr) {
+            qdev_prop_set_chr(DEVICE(s->uart[i]), "chardev", chr);
+        } else {
+            warn_report("mt7621: no chardev serial%d, UART%d will print "
+                        "nothing to the console", i, i + 1);
+        }
+        qdev_prop_set_uint8(DEVICE(s->uart[i]), "regshift", 2);
+        qdev_prop_set_uint8(DEVICE(s->uart[i]), "endianness",
+                            TARGET_BIG_ENDIAN ? DEVICE_BIG_ENDIAN
+                                              : DEVICE_LITTLE_ENDIAN);
+        sysbus_realize(SYS_BUS_DEVICE(s->uart[i]), &error_abort);
+        sysbus_mmio_map(SYS_BUS_DEVICE(s->uart[i]), 0,
+                        s->memmap[DEV_UART1 + i]);
+    }
+
+    /*
+     * UART0 at 0x1e000c00 serves both console addresses: MIPS kseg1
+     * 0xbe000c00 translates to physical 0x1e000c00 (kseg0 and kseg1 both mask
+     * to phys = addr & 0x1fffffff) and QEMU's system_memory is indexed by
+     * physical address. So there is deliberately no region at physical
+     * 0xbe000c00, and no second mapping of the UART region either - a
+     * MemoryRegion has exactly one container, and mapping it twice trips
+     * memory_region_add_subregion_common()'s `!subregion->container' assert.
+     */
+
     /* flash memory-mapped window, also the MIPS BEV=1 exception vectors */
     memory_region_init_io(&s->flash_mmap_mr, OBJECT(s),
                           &mt7621_flash_mmap_ops, s, "mt7621-flash-mmap",
