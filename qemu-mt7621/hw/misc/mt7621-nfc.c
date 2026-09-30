@@ -167,8 +167,23 @@ static bool nfc_is_read_cmd(mt7621NfcState *s)
     return s->cmd == NAND_CMD_READ0 || s->cmd == NAND_CMD_PAGE_READ;
 }
 
+#define NFC_TRACE_MAX 40
+
+static void nfc_trace(mt7621NfcState *s, const char *rw, hwaddr addr,
+                      uint64_t val, unsigned size)
+{
+    if (s->n_trace >= NFC_TRACE_MAX) {
+        return;
+    }
+    s->n_trace++;
+    fprintf(stderr, "nfc[%llu/%d]: %s off=0x%02x size=%u val=0x%" PRIx64 "\n",
+            (unsigned long long)s->n_trace, NFC_TRACE_MAX, rw,
+            (unsigned)addr, size, val);
+}
+
 static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
 {
+    nfc_trace(MT7621_NFC(opaque), "rd", addr, 0, size);
     mt7621NfcState *s = MT7621_NFC(opaque);
     uint32_t val = 0;
 
@@ -269,6 +284,7 @@ static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
 static void nfc_nfi_write(void *opaque, hwaddr addr, uint64_t val64,
                           unsigned size)
 {
+    nfc_trace(MT7621_NFC(opaque), "wr", addr, val64, size);
     mt7621NfcState *s = MT7621_NFC(opaque);
     uint32_t val = (uint32_t)val64;
 
