@@ -31,7 +31,7 @@ if [ "$SECS" != "0" ]; then
     rm -f "$LOG"
     # The property is authoritative; the env var is the fallback for the case
     # where machine properties are applied after mc->init.
-    MI_ROUTER4_FLASH="$FLASH" timeout "$SECS" \
+    MI_ROUTER4_FLASH="$FLASH" timeout -k 10 "$SECS" \
         "$QEMU" \
         -M mi-router-4,flash="$FLASH" \
         -m 128 \
@@ -46,9 +46,36 @@ else
 fi
 
 [ -f "$LOG" ] || { echo "ERROR: no log at $LOG" >&2; exit 1; }
-echo "=================== serial log ==================="
-cat "$LOG"
+
+# A guest stuck in a loop writing to the UART will fill this file with
+# hundreds of megabytes in 90s. Printing all of it makes the CI step itself
+# crawl (the runner ships the log to GitHub over a throttled link), so show
+# the head - where the boot starts - and the tail - where it stops - and
+# report the total size.
+LOG_BYTES=$(stat -c%s "$LOG")
+HEAD_C=32768
+TAIL_C=16384
 echo "==================================================="
+echo "serial log: $LOG_BYTES bytes (showing first $HEAD_C + last $TAIL_C)"
+echo "==================================================="
+echo "-------------------- head -----------------------"
+head -c "$HEAD_C" "$LOG"
+echo
+echo "-------------------- tail -----------------------"
+tail -c "$TAIL_C" "$LOG"
+echo
+echo "==================================================="
+
+# Keep a bounded copy for the CI artefact; the raw log can be gigabytes.
+{
+    echo "raw log: $LOG_BYTES bytes; showing first $HEAD_C + last $TAIL_C"
+    echo "---- head ----"
+    head -c "$HEAD_C" "$LOG"
+    echo
+    echo "---- tail ----"
+    tail -c "$TAIL_C" "$LOG"
+    echo
+} > "$LOG.extract"
 
 # ---------------------------------------------------------------- grade phase
 level=0
