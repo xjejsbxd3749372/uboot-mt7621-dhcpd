@@ -129,7 +129,7 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
     s->page_armed = 1;
 }
 
-static uint32_t nfc_decode_page(void)
+static uint32_t nfc_decode_page(mt7621NfcState *s)
 {
     /*
      * The driver writes every address byte through NFI_COLADDR in wire order:
@@ -143,7 +143,7 @@ static uint32_t nfc_decode_page(void)
     return page;
 }
 
-static uint32_t nfc_decode_col(void)
+static uint32_t nfc_decode_col(mt7621NfcState *s)
 {
     uint32_t col = 0;
 
@@ -303,7 +303,7 @@ static void nfc_nfi_write(void *opaque, hwaddr addr, uint64_t val64,
         s->in_addr_phase = 0;
         s->cmd_ready = 1;
         if (s->cmd == NAND_CMD_READSTART && nfc_is_read_cmd(s)) {
-            nfc_load_page(s, nfc_decode_page(), nfc_decode_col());
+            nfc_load_page(s, nfc_decode_page(s), nfc_decode_col(s));
         } else if (s->cmd == NAND_CMD_RESET) {
             s->page_armed = 0;
             s->stream_pos = 0;
