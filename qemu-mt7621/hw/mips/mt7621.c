@@ -175,8 +175,31 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
     /* MT7621 runs at 1GHz nominal; the exact rate only affects timeouts. */
     clock_set_hz(cpuclk, 1000000000);
 
-    /* QEMU 9.2 added the endianness argument to mips_cpu_create_with_clock. */
-    s->cpu = mips_cpu_create_with_clock(MIPS_CPU_TYPE_NAME("24KEc"), cpuclk,
+    /*
+     * 34Kf, not 24KEc - and that matters. The SPL's startup code in
+     * arch/mips/mach-mt7621/spl/start.S does:
+     *
+     *     mfc0 t0, $2, 2     # QEMU maps this to TCBind, gated on Config3.MT
+     *     andi t0, t0, 0xf
+     *     bne  t0, $0, <shadow/secondary path>
+     *
+     * On 24KEc (which has no Config3.MT and no FPU - QEMU's def comment is
+     * literally "we have a DSP, but no FPU") disas_mt_available() is false,
+     * so the read lands in gen_mfc0's cp0_unimplemented branch and returns
+     * ~0. That makes the branch taken, the SPL runs a secondary-thread path
+     * it should not, and execution ends up executing COP1 with no FPU:
+     *
+     *   do_raise_exception_err: 19 (coprocessor unusable) 1
+     *   mips_cpu_do_interrupt: PC bfc00380 EPC a0000f1c cause 11
+     *
+     * 34Kf sets CP0C3_MT and CP0C1_FP, so TCBind reads back 0 for TC0, the
+     * branch is not taken, and a COP1 instruction is legal. The real core is
+     * MT-capable - this tree includes asm/mipsmtregs.h, cps.c and launch.c
+     * for routing BootROM to the second core.
+     *
+     * QEMU 9.2 also added the endianness argument here.
+     */
+    s->cpu = mips_cpu_create_with_clock(MIPS_CPU_TYPE_NAME("34Kf"), cpuclk,
                                         TARGET_BIG_ENDIAN);
     cpu_mips_irq_init_cpu(s->cpu);
     cpu_mips_clock_init(s->cpu);
