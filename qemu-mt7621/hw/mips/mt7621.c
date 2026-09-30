@@ -63,6 +63,12 @@ typedef struct MT7621Scratch {
     uint64_t dom_count;
     uint64_t n;
     int64_t next_report;
+    /*
+     * Mirror rule: reads of mirror_dst answer with the word stored at
+     * mirror_src. Only the CM window uses it, and mirror_dst == 0 disables it.
+     */
+    hwaddr mirror_src;
+    hwaddr mirror_dst;
 } MT7621Scratch;
 
 /*
@@ -77,11 +83,13 @@ static const struct {
     hwaddr addr;
     hwaddr size;
     const char *name;
+    hwaddr mirror_src;
+    hwaddr mirror_dst;
 } mt7621_scratch_map[MT7621_N_SCRATCH] = {
-    { 0x1e000000, 0x000c00, "mt7621-sysc-wdt-gpio" },  /* up to UART0 */
-    { 0x1e000c20, 0x0000e0, "mt7621-uart0-tail" },     /* UART0 ends 0xc20 */
-    { 0x1e000d20, 0x0000e0, "mt7621-uart1-tail" },
-    { 0x1e000e20, 0x0041e0, "mt7621-gdma-gap" },       /* ends at DRAMC 0x5000 */
+    { 0x1e000000, 0x000c00, "mt7621-sysc-wdt-gpio", 0, 0 },  /* up to UART0 */
+    { 0x1e000c20, 0x0000e0, "mt7621-uart0-tail", 0, 0 },     /* ends 0xc20 */
+    { 0x1e000d20, 0x0000e0, "mt7621-uart1-tail", 0, 0 },
+    { 0x1e000e20, 0x0041e0, "mt7621-gdma-gap", 0, 0 },       /* ends at DRAMC */
     /*
      * DRAMC gets its own window on purpose. The boot chain runs the legacy
      * DDR calibration blob - mt7621_stage_sram_noprint.bin, exactly 13928
@@ -91,9 +99,20 @@ static const struct {
      * dominant-address report names the register it waits on instead of being
      * drowned out by instruction fetches from the blob itself.
      */
-    { 0x1e005000, 0x001000, "mt7621-dramc" },
-    { 0x1e006000, 0x01fa000, "mt7621-fe-and-friends" }, /* to 0x1e200000 */
-    { 0x1fbc0000, 0x040000, "mt7621-cm" },             /* GIC/CPC/CDMM */
+    { 0x1e005000, 0x001000, "mt7621-dramc", 0, 0 },
+    { 0x1e006000, 0x01fa000, "mt7621-fe-and-friends", 0, 0 }, /* to 0x1e200000 */
+    { 0x1fbc0000, 0x040000, "mt7621-cm", 0x3a008, 0x3c008 },
+    /*
+     * MIPS CM: join_coherent_domain() in arch/mips/mach-mt7621/launch_ll.S
+     * writes the whole core mask to GCR_Cx_COHERENCE (CDMM+0x2008 = window
+     * offset 0x3a008), then for each core selects it through GCR_CL_OTHER
+     * (CDMM+0x2018) and spins on GCR_CO_COHERENCE (CDMM+0x4008 = window
+     * offset 0x3c008) until it reads back non-zero. GCR_CO_* is the view of
+     * the core selected by GCR_CL_OTHER, and nothing else in the window is
+     * ever written at 0x3c008, so without this mirror the read stays 0 and
+     * the SPL spins there forever - which is exactly where the PC sampler
+     * found it, at 0x80100c94.
+     */
 };
 
 
@@ -261,6 +280,9 @@ static uint64_t mt7621_scratch_read(void *opaque, hwaddr addr, unsigned size)
     unsigned i;
 
     mt7621_scratch_touch(sc, addr);
+    if (sc->mirror_dst && addr == sc->mirror_dst) {
+        addr = sc->mirror_src;
+    }
     for (i = 0; i < size; i++) {
         v |= (addr + i < sc->size) ? (uint64_t)sc->buf[addr + i] << (8 * i)
                                    : (uint64_t)0xff << (8 * i);
@@ -546,6 +568,8 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
     for (unsigned i = 0; i < MT7621_N_SCRATCH; i++) {
         s->scratch[i].size = mt7621_scratch_map[i].size;
         s->scratch[i].name = mt7621_scratch_map[i].name;
+        s->scratch[i].mirror_src = mt7621_scratch_map[i].mirror_src;
+        s->scratch[i].mirror_dst = mt7621_scratch_map[i].mirror_dst;
         s->scratch[i].buf = g_malloc0(s->scratch[i].size);
         memory_region_init_io(&s->scratch_mr[i], OBJECT(s),
                               &mt7621_scratch_ops, &s->scratch[i],
