@@ -12,6 +12,7 @@
 #include "qom/object.h"
 #include "hw/sysbus.h"
 #include "exec/memory.h"
+#include "hw/block/block.h"
 #include "block/block-backend.h"
 
 /* MT7621 NAND geometry as configured for Mi Router 4 (128MB SPI-NAND). */
@@ -34,9 +35,15 @@ struct mt7621NfcState {
     MemoryRegion nfi_mr;
     MemoryRegion ecc_mr;
 
-    /* backing store: the whole 128MB NAND dump, raw page layout
-     * (2048B data + 64B OOB = 2112B per page) */
-    BlockBackend *blk;
+    /*
+     * Backing store: the whole 128MiB NAND image, logical layout
+     * (2048B of page data per page, no OOB interleaved).
+     *
+     * QEMU 9.2 dropped DEFINE_PROP_BLOCK, so the backend is carried by a
+     * BlockConf; conf.blk is the BlockBackend handed to us by the
+     * "drive" property and is released by QEMU when the device is gone.
+     */
+    BlockConf conf;
 
     /* registers the guest can read back */
     uint16_t cnfg, con, pagefmt, strdata, csr, iocon, mastersta;
