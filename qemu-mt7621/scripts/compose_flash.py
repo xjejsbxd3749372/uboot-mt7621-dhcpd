@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """Compose the 128MiB logical NAND image the MT7621 QEMU model boots from.
 
-Layout is the Mi Router 4 partition map (target/linux/ramips/dts):
-  0x000000  bootloader  512K   <- the U-Boot build under test
-  0x080000  config      256K   <- from the stock dump
-  0x0c0000  bdata       256K
-  0x100000  factory     256K   (MT7603 + MT7612 calibration)
-  0x140000  crash       256K
-  0x180000  crash_syslog 256K
-  0x1c0000  reserved0   256K
-  0x200000  kernel_stock 4M
-  0x600000  kernel      4M
-  0xa00000  ubi         rest
+Layout follows CONFIG_MTDPARTS_DEFAULT of the U-Boot build under test:
+  mtdparts=nand0:512k(u-boot),256k(u-boot-env),256k(bdata),256k(factory),
+            256k(crash),256k(crash_syslog),256k(reserved0),4m(kernel_stock),-(firmware)
+
+  0x000000  u-boot        512K  <- the build under test (SPL @0, payload @0x20000)
+  0x080000  u-boot-env    256K
+  0x0c0000  bdata         256K
+  0x100000  factory       256K  (MT7603 + MT7612 calibration)
+  0x140000  crash         256K
+  0x180000  crash_syslog  256K
+  0x1c0000  reserved0     256K
+  0x200000  kernel_stock  4M
+  0x600000  firmware/ubi  rest  (CONFIG_DEFAULT_NAND_KERNEL_OFFSET=0x600000)
+
+Everything from 0x80000 on is copied verbatim from the stock dump, so env,
+bdata and the factory calibration are the real ones.
 
 The rest of the flash is copied verbatim from the stock dump, so only the
 bootloader region is replaced by the build under test.
