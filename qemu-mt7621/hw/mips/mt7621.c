@@ -9,6 +9,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include "qemu/osdep.h"
+#include <stdio.h>
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
@@ -26,14 +27,6 @@
 #include "exec/memory.h"
 #include "sysemu/reset.h"
 #include "qom/object.h"
-#include "sysemu/blockdev.h"
-/* BlockConf / BlockBackend are declared by hw/block/block.h in 9.2. */
-#include "hw/block/block.h"
-/* blk_pread() is part of the private block layer, only reachable through
- * block_int.h - the public headers deliberately do not expose it. */
-#include "block_int.h"
-/* BlockBackend itself is a generated typedef; qemu/typedefs.h declares it. */
-#include "qemu/typedefs.h"
 /* MIPSCPU, MIPS_CPU_TYPE_NAME, cpu_mips_*_init() live in the target headers,
  * which are on the include path for sources in mips_ss (see malta.c). */
 #include "target/mips/cpu.h"
@@ -168,13 +161,11 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
      * SPL and early U-Boot write their console to the 0xbe000c00 alias.
      * serial-mm only publishes a single MMIO region (index 0), so the
      * alias is a second mapping of that same region rather than a second
-     * sysbus region. memory_region_ref() returns void, so the add_subregion
-     * call takes the ref inline.
+     * sysbus region; memory_region_add_subregion() takes the ref itself.
      */
     memory_region_add_subregion(get_system_memory(), s->memmap[DEV_DBG_UART],
                                 sysbus_mmio_get_region(
                                     SYS_BUS_DEVICE(s->uart[0]), 0));
-    memory_region_ref(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->uart[0]), 0));
 
     /*
      * Everything else is modelled as unimplemented: the register reads return
@@ -237,6 +228,9 @@ type_init(mt7621_soc_register_types)
 /* Xiaomi Mi Router 4 (R4) machine                                    */
 /* ------------------------------------------------------------------ */
 
+/* the NAND image path, from -mt7621-flash <path> */
+static char *mi_router4_flash_file;
+
 typedef struct MiRouter4Reset {
     MT7621SoCState *soc;
     uint64_t vector;
@@ -261,21 +255,20 @@ static bool load_spl_from_nand(MachineState *machine, MT7621SoCState *soc,
                                hwaddr *entry_out)
 {
     mt7621NfcState *nfc = MT7621_NFC(soc->nfc);
-    BlockBackend *blk = nfc->conf.blk;
     uint8_t hdr[0x40];
     uint32_t magic, size, load, entry;
-    int64_t got;
 
-    if (!blk) {
-        error_report("mi-router-4: -drive if=mtd is required");
+    if (!nfc->data) {
+        error_report("mi-router-4: -mt7621-flash <image> is required");
+        return false;
+    }
+    if (nfc->size < sizeof(hdr)) {
+        error_report("mi-router-4: flash image is only %" PRIu64 "B",
+                     nfc->size);
         return false;
     }
 
-    got = blk_pread(blk, sizeof(hdr), hdr, 0);
-    if (got != sizeof(hdr)) {
-        error_report("mi-router-4: could not read the NAND uImage header");
-        return false;
-    }
+    memcpy(hdr, nfc->data, sizeof(hdr));
 
     magic = ldl_be_p(hdr);
     if (magic != UIMAGE_MAGIC) {
@@ -294,16 +287,18 @@ static bool load_spl_from_nand(MachineState *machine, MT7621SoCState *soc,
      * of physical 0x00200000.
      */
     hwaddr phys = load & 0x1fffffff;
-    uint8_t *buf = g_malloc(size);
+    uint8_t *buf;
 
-    got = blk_pread(blk, size, buf, 0x40);
-    if (got != (int64_t)size) {
-        error_report("mi-router-4: short read of the SPL payload");
-        g_free(buf);
+    if ((uint64_t)size + 0x40 > nfc->size) {
+        error_report("mi-router-4: SPL payload of %uB runs past the flash image",
+                     size);
         return false;
     }
 
-    if (phys + size > machine->ram_size) {
+    buf = g_malloc(size);
+    memcpy(buf, nfc->data + 0x40, size);
+
+    if (phys + (hwaddr)size > machine->ram_size) {
         error_report("mi-router-4: SPL load 0x%" HWADDR_PRIx " + %u exceeds RAM",
                      phys, size);
         g_free(buf);
@@ -321,22 +316,64 @@ static bool load_spl_from_nand(MachineState *machine, MT7621SoCState *soc,
     return true;
 }
 
+/*
+ * Read the whole NAND image into memory. See the comment on nfc->data: this
+ * is deliberately plain stdio rather than a block backend, because every
+ * block-layer entry point a device could use moved or vanished in 9.2.
+ */
+static bool load_flash_image(mt7621NfcState *nfc, const char *path)
+{
+    FILE *fp;
+    long len;
+    uint8_t *buf;
+
+    fp = fopen(path, "rb");
+    if (!fp) {
+        error_report("mi-router-4: cannot open NAND image '%s'", path);
+        return false;
+    }
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        error_report("mi-router-4: cannot seek in '%s'", path);
+        fclose(fp);
+        return false;
+    }
+    len = ftell(fp);
+    if (len <= 0) {
+        error_report("mi-router-4: '%s' is empty", path);
+        fclose(fp);
+        return false;
+    }
+    rewind(fp);
+
+    buf = g_malloc(len);
+    if (fread(buf, 1, len, fp) != (size_t)len) {
+        error_report("mi-router-4: short read of '%s'", path);
+        g_free(buf);
+        fclose(fp);
+        return false;
+    }
+    fclose(fp);
+
+    nfc->data = buf;
+    nfc->size = len;
+    return true;
+}
+
 static void mi_router4_init(MachineState *machine)
 {
     MT7621SoCState *soc;
     MiRouter4Reset *reset;
-    DriveInfo *dinfo;
     uint64_t entry = 0x80200000;
 
     soc = MT7621_SOC(object_new(TYPE_MT7621_SOC));
     object_property_add_child(OBJECT(machine), "soc", OBJECT(soc));
     object_unref(OBJECT(soc));
 
-    /* the NAND dump is an IF_MTD drive, the same one U-Boot will read */
-    dinfo = drive_get(IF_MTD, 0, 0);
-    if (dinfo) {
-        qdev_prop_set_drive(DEVICE(soc->nfc), "drive",
-                            blk_by_legacy_dinfo(dinfo));
+    /* give the NAND controller its image before it is realized */
+    if (mi_router4_flash_file) {
+        char *path = g_strdup(mi_router4_flash_file);
+        load_flash_image(MT7621_NFC(soc->nfc), path);
+        g_free(path);
     }
 
     qdev_realize(DEVICE(soc), NULL, &error_abort);
@@ -355,12 +392,32 @@ static void mi_router4_init(MachineState *machine)
     qemu_register_reset(mi_router4_cpu_reset, reset);
 }
 
+static char *mi_router4_get_flash(Object *obj, void *data)
+{
+    return mi_router4_flash_file;
+}
+
+static void mi_router4_set_flash(Object *obj, const char *value,
+                                 void *data, Error **errp)
+{
+    g_free(mi_router4_flash_file);
+    mi_router4_flash_file = g_strdup(value);
+}
+
 static void mi_router4_class_init(MachineClass *mc)
 {
     mc->desc = "Xiaomi Mi Router 4 (R4) - MediaTek MT7621 (mipsel)";
     mc->init = mi_router4_init;
     mc->default_ram_size = 128 * MiB;
     mc->default_ram_id = "mi-router-4.ram";
+
+    /*
+     * Declaring a plain "flash" property auto-generates the
+     * -mt7621-flash <path> machine option.
+     */
+    object_class_property_add(mc, "flash", "string",
+                              mi_router4_get_flash, mi_router4_set_flash,
+                              NULL, mc);
 }
 
 DEFINE_MACHINE("mi-router-4", mi_router4_class_init)
