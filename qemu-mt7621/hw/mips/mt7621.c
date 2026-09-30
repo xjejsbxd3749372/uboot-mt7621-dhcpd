@@ -72,18 +72,28 @@ typedef struct MT7621Scratch {
  * the flash-mmap window at 0x1fc00000, so nothing overlaps and the question
  * of which region wins never arises.
  */
-#define MT7621_N_SCRATCH 6
+#define MT7621_N_SCRATCH 7
 static const struct {
     hwaddr addr;
     hwaddr size;
     const char *name;
 } mt7621_scratch_map[MT7621_N_SCRATCH] = {
-    { 0x1e000000, 0x000c00, "mt7621-sysc-wdt-gpio" }, /* up to UART0 */
-    { 0x1e000c20, 0x0000e0, "mt7621-uart0-tail" },    /* UART0 ends 0xc20 */
+    { 0x1e000000, 0x000c00, "mt7621-sysc-wdt-gpio" },  /* up to UART0 */
+    { 0x1e000c20, 0x0000e0, "mt7621-uart0-tail" },     /* UART0 ends 0xc20 */
     { 0x1e000d20, 0x0000e0, "mt7621-uart1-tail" },
-    { 0x1e000e20, 0x0021e0, "mt7621-gdma-gap" },      /* ends at NFI 0x3000 */
-    { 0x1e004000, 0x01fc000, "mt7621-fe-and-friends" }, /* to 0x1e200000 */
-    { 0x1fbc0000, 0x040000, "mt7621-cm" },            /* GIC/CPC/CDMM */
+    { 0x1e000e20, 0x0041e0, "mt7621-gdma-gap" },       /* ends at DRAMC 0x5000 */
+    /*
+     * DRAMC gets its own window on purpose. The boot chain runs the legacy
+     * DDR calibration blob - mt7621_stage_sram_noprint.bin, exactly 13928
+     * bytes, which is the count in the memcpy the PC sampler catches - from
+     * the FE SRAM, and it sweeps these registers looking for timing/status
+     * bits that a placeholder can never assert. Splitting it out means its
+     * dominant-address report names the register it waits on instead of being
+     * drowned out by instruction fetches from the blob itself.
+     */
+    { 0x1e005000, 0x001000, "mt7621-dramc" },
+    { 0x1e006000, 0x01fa000, "mt7621-fe-and-friends" }, /* to 0x1e200000 */
+    { 0x1fbc0000, 0x040000, "mt7621-cm" },             /* GIC/CPC/CDMM */
 };
 
 
