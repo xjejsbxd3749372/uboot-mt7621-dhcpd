@@ -98,8 +98,58 @@ struct MT7621SoCState {
      */
     SerialMM *uart[3];
     SysBusDevice *nfc;
+    MemoryRegion flash_mmap_mr;
     hwaddr memmap[sizeof(mt7621_memmap) / sizeof(hwaddr)];
 };
+
+/*
+ * MT7621_FLASH_MMAP_BASE - the SoC maps flash at physical 0x1fc00000, which is
+ * also where MIPS parks the BEV=1 exception vectors (general exception at
+ * 0xBFC00380 = kseg1 of 0x1fc00380). This board's own SPL relies on it:
+ * arch/mips/mach-mt7621/spl/start.S lays its ROM exception vectors out with
+ * `.org 0x380` and comments "we need spaces for storing stage1 header required
+ * by BootROM". Without a region here a single exception strands the CPU
+ * spinning on an unmapped fetch - that produced a 4.2GB serial log and no
+ * boot - because QEMU retries the rejected read forever instead of advancing.
+ *
+ * The window is filled from the NAND image, which is what the hardware does.
+ */
+#define MT7621_FLASH_MMAP_BASE 0x1fc00000
+#define MT7621_FLASH_MMAP_SIZE 0x400000   /* up to the top of kseg1 (0x1ffffff0) */
+
+static uint64_t mt7621_flash_mmap_read(void *opaque, hwaddr addr, unsigned size)
+{
+    MT7621SoCState *soc = opaque;
+    mt7621NfcState *nfc = MT7621_NFC(soc->nfc);
+    uint64_t v = 0;
+    unsigned i;
+
+    for (i = 0; i < size; i++) {
+        uint64_t b = 0xff;             /* erased flash outside the image */
+
+        if (nfc->data && addr + i < nfc->size) {
+            b = nfc->data[addr + i];
+        }
+        v |= b << (8 * i);             /* DEVICE_LITTLE_ENDIAN */
+    }
+    return v;
+}
+
+static void mt7621_flash_mmap_write(void *opaque, hwaddr addr, uint64_t val,
+                                    unsigned size)
+{
+    /* The real controller only updates the window base here. Dropping writes
+     * is enough, and avoids a log line per store from a spinning guest. */
+}
+
+static const MemoryRegionOps mt7621_flash_mmap_ops = {
+    .read = mt7621_flash_mmap_read,
+    .write = mt7621_flash_mmap_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+};
+
 
 static void mt7621_soc_init(Object *obj)
 {
@@ -135,6 +185,13 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
     sysbus_realize(s->nfc, errp);
     sysbus_mmio_map(s->nfc, 0, s->memmap[DEV_NFI]);
     sysbus_mmio_map(s->nfc, 1, s->memmap[DEV_NFI_ECC]);
+
+    /* flash memory-mapped window, also the MIPS BEV=1 exception vectors */
+    memory_region_init_io(&s->flash_mmap_mr, OBJECT(s),
+                          &mt7621_flash_mmap_ops, s, "mt7621-flash-mmap",
+                          MT7621_FLASH_MMAP_SIZE);
+    memory_region_add_subregion(get_system_memory(), MT7621_FLASH_MMAP_BASE,
+                                &s->flash_mmap_mr);
 
     /* three 16550 UARTs with a 2-bit register shift */
     for (int i = 0; i < 3; i++) {
