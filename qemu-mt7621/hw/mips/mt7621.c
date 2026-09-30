@@ -35,6 +35,28 @@
 #define TYPE_MI_ROUTER4 "mi-router-4"
 OBJECT_DECLARE_SIMPLE_TYPE(MT7621SoCState, MT7621_SOC)
 
+/*
+ * Memory-backed placeholder for an address range the SoC has but the model
+ * does not emulate. Unlike create_unimplemented_device(), which drops writes
+ * and always reads back 0, this keeps whatever was stored - which matters
+ * because the SPL uses part of the FE window as its initial stack:
+ *
+ *   arch/mips/mach-mt7621/spl/start.S:
+ *       #define CONFIG_SYS_INIT_SP_ADDR 0xbe10d000
+ *       lui  t1, 0xbe10 ; ori t1, 0xd000 ; and t9, t1, t0
+ *
+ * kseg1 0xbe10d000 is physical 0x1e10d000, inside MT7621_FE_BASE+MT7621_FE_SIZE
+ * (0x1e100000 + 0xe000). With a write-dropping placeholder the saved registers
+ * at sp-0x10 read back 0, so `jr $ra` lands at 0x0 and the SPL dies on a
+ * reserved-instruction exception at PC 0x0000002c before it ever reaches the
+ * NAND driver.
+ */
+typedef struct MT7621Scratch {
+    uint8_t *buf;
+    hwaddr size;
+} MT7621Scratch;
+
+
 /* MT7621 memory map (target/linux/ramips/dts/mt7621.dtsi) */
 enum {
     DEV_SDRAM = 0,
@@ -99,6 +121,8 @@ struct MT7621SoCState {
     SerialMM *uart[3];
     SysBusDevice *nfc;
     MemoryRegion flash_mmap_mr;
+    MT7621Scratch fe;
+    MemoryRegion fe_mr;
     hwaddr memmap[sizeof(mt7621_memmap) / sizeof(hwaddr)];
 };
 
@@ -149,6 +173,39 @@ static const MemoryRegionOps mt7621_flash_mmap_ops = {
     .valid = { .min_access_size = 1, .max_access_size = 4 },
     .impl = { .min_access_size = 1, .max_access_size = 4 },
 };
+
+static uint64_t mt7621_scratch_read(void *opaque, hwaddr addr, unsigned size)
+{
+    MT7621Scratch *sc = opaque;
+    uint64_t v = 0;
+    unsigned i;
+
+    for (i = 0; i < size; i++) {
+        v |= (addr + i < sc->size) ? (uint64_t)sc->buf[addr + i] << (8 * i)
+                                   : (uint64_t)0xff << (8 * i);
+    }
+    return v;
+}
+
+static void mt7621_scratch_write(void *opaque, hwaddr addr, uint64_t val,
+                                 unsigned size)
+{
+    MT7621Scratch *sc = opaque;
+    unsigned i;
+
+    for (i = 0; i < size && addr + i < sc->size; i++) {
+        sc->buf[addr + i] = val >> (8 * i);
+    }
+}
+
+static const MemoryRegionOps mt7621_scratch_ops = {
+    .read = mt7621_scratch_read,
+    .write = mt7621_scratch_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+};
+
 
 
 static void mt7621_soc_init(Object *obj)
@@ -216,6 +273,14 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(get_system_memory(), MT7621_FLASH_MMAP_BASE,
                                 &s->flash_mmap_mr);
 
+    /* FE window: read/write placeholder, see MT7621Scratch above */
+    s->fe.size = 0xe000;
+    s->fe.buf = g_malloc0(s->fe.size);
+    memory_region_init_io(&s->fe_mr, OBJECT(s), &mt7621_scratch_ops, &s->fe,
+                          "mt7621-fe", s->fe.size);
+    memory_region_add_subregion(get_system_memory(), s->memmap[DEV_ETH],
+                                &s->fe_mr);
+
     /* three 16550 UARTs with a 2-bit register shift */
     for (int i = 0; i < 3; i++) {
         /*
@@ -268,7 +333,6 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
         { "gdma",      DEV_GDMA,     0x800 },
         { "crypto",    DEV_CRYPTO,   0x400 },
         { "dramc",     DEV_DRAMC,    0x1000 },
-        { "eth",       DEV_ETH,      0xe000 },
         { "sdhci",     DEV_SDHCI,    0x2000 },
         { "pcie",      DEV_PCIE,     0x8000 },
         { "xhci",      DEV_XHCI,     0x2000 },
