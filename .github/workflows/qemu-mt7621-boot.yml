@@ -14,6 +14,9 @@ jobs:
     timeout-minutes: 60
     env:
       QEMU_VERSION: '9.2.0'
+      # gh needs an explicit token in Actions; without it every `gh api`
+      # call fails with exit 4 and the boot never runs.
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
@@ -76,25 +79,11 @@ jobs:
             -o flash.bin --uboot u-boot.img --dump full.bin
           sha256sum flash.bin
 
-      - name: run the simulated boot
+      - name: run and grade the simulated boot
         run: |
-          set -uo pipefail
-          /tmp/qemu-mt7621-build/build/qemu-system-mipsel \
-            -M mi-router-4,flash=flash.bin -m 128 \
-            -nographic -no-reboot -serial mon:stdio \
-            -d guest_errors,unimp \
-            > boot.log 2>&1 &
-          QPID=$!
-          sleep 90
-          kill $QPID 2>/dev/null || true
-          wait $QPID 2>/dev/null || true
-          echo "=================== serial log ==================="
-          cat boot.log
-          echo "==================================================="
-
-      - name: grade the boot
-        run: bash qemu-mt7621/scripts/run_boot.sh \
-          /tmp/qemu-mt7621-build/build/qemu-system-mipsel flash.bin 5 boot.log
+          bash qemu-mt7621/scripts/run_boot.sh \
+            /tmp/qemu-mt7621-build/build/qemu-system-mipsel \
+            flash.bin 90 boot.log 3
 
       - name: upload artefacts
         if: always()
