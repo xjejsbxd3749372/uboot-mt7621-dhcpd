@@ -60,6 +60,12 @@ jobs:
           url=$(gh api repos/${{ github.repository }}/releases/latest \
                 --jq '.assets[] | select(.name|test("^(u-boot_.*|u-boot-combined)\\.img$")) | .browser_download_url' \
                 | head -1)
+          if [ -z "$url" ]; then
+            # fall back to the combined SPL+U-Boot image the local build produced
+            url=$(gh api repos/${{ github.repository }}/releases/latest \
+                  --jq '.assets[] | select(.name|test("^u-boot-mt7621_.*\\.bin$")) | .browser_download_url' \
+                  | head -1)
+          fi
           echo "u-boot asset: $url"
           curl -sSL --max-time 300 -o u-boot.img "$url"
           echo "u-boot: $(stat -c%s u-boot.img)B"
