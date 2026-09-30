@@ -104,13 +104,13 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
     s->page_fmt = (s->cnfg >> AUTO_FMT_EN_S) & 1;
     s->n_page_reads++;
 
-    if (!s->blk || col >= MT7621_NFC_PAGE_SIZE) {
+    if (!s->conf.blk || col >= MT7621_NFC_PAGE_SIZE) {
         s->page_armed = 1;
         return;
     }
 
     off = nfc_page_offset(page);
-    got = blk_pread(s->blk, MT7621_NFC_PAGE_SIZE - col, s->page_buf + col,
+    got = blk_pread(s->conf.blk, MT7621_NFC_PAGE_SIZE - col, s->page_buf + col,
                     off + col);
     if (got < 0) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -440,31 +440,33 @@ static void nfc_init(Object *obj)
                           0x800);
     memory_region_init_io(&s->ecc_mr, obj, &nfc_ecc_ops, s, "mt7621-nfc-ecc",
                           0x800);
+
+    /*
+     * Both register blocks are published as sysbus MMIO regions so the
+     * SoC can map them at 0x1e003000 (NFI) and 0x1e003800 (ECC).
+     */
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->nfi_mr);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->ecc_mr);
 }
 
 static void nfc_realize(DeviceState *dev, Error **errp)
 {
     mt7621NfcState *s = MT7621_NFC(dev);
 
-    if (!s->blk) {
+    if (!s->conf.blk) {
         warn_report("mt7621-nfi: no drive given, NAND reads will return 0xff");
     }
 }
 
-static void nfc_unrealize(DeviceState *dev)
-{
-    mt7621NfcState *s = MT7621_NFC(dev);
-
-    if (s->blk) {
-        blk_unref(s->blk);
-        s->blk = NULL;
-    }
-}
-
 static Property nfc_properties[] = {
-    DEFINE_PROP_BLOCK("drive", mt7621NfcState, blk),
-    DEFINE_PROP_UINT64("page-reads", mt7621NfcState, n_page_reads),
-    DEFINE_PROP_UINT64("commands", mt7621NfcState, n_cmds),
+    /*
+     * QEMU 9.2 removed DEFINE_PROP_BLOCK: a bare BlockBackend can no longer
+     * be attached to a device directly. The replacement is a BlockConf
+     * member carrying the standard block property set, whose "blk" field
+     * holds the backend. See DEFINE_BLOCK_PROPERTIES in hw/block/block.h.
+     * QEMU releases it for us, so there is no unrealize hook here.
+     */
+    DEFINE_PROP_DRIVE("drive", mt7621NfcState, conf.blk),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -473,7 +475,7 @@ static void nfc_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = nfc_realize;
-    dc->unrealize = nfc_unrealize;
+    device_class_set_props(dc, nfc_properties);
     dc->desc = "MediaTek MT7621 NAND Flash Controller (NFI + ECC)";
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
