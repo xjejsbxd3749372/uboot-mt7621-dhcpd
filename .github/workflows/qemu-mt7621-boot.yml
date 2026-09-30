@@ -1,0 +1,101 @@
+name: qemu-mt7621-boot
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'qemu-mt7621/**'
+      - '.github/workflows/qemu-mt7621-boot.yml'
+
+jobs:
+  simulated-boot:
+    name: MT7621 QEMU simulated boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      QEMU_VERSION: '9.2.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build meson pkg-config \
+            python3-venv python3-pip git curl ca-certificates \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev flex bison
+
+      - name: cache the QEMU build tree
+        uses: actions/cache@v4
+        with:
+          path: /tmp/qemu-mt7621-build
+          key: qemu-mt7621-${{ env.QEMU_VERSION }}-${{ hashFiles('qemu-mt7621/**') }}
+
+      - name: build QEMU with the MT7621 model
+        run: bash qemu-mt7621/scripts/build_qemu.sh
+
+      - name: fetch the stock NAND dump
+        id: dump
+        run: |
+          set -euo pipefail
+          # full.bin is a 128MiB logical partition dump of this router. It is
+          # published as a release asset so CI can boot the real contents.
+          url=$(gh api repos/${{ github.repository }}/releases \
+                --jq '.[] | select(.tag_name=="nand-dump") | .assets[]
+                       | select(.name=="mi-router-4-full.bin") | .browser_download_url' \
+                2>/dev/null | head -1 || true)
+          if [ -n "${url:-}" ]; then
+            echo "downloading the stock NAND dump"
+            curl -sSL --max-time 900 -o full.bin "$url"
+          else
+            echo "::warning::no stock NAND dump published; composing a blank device"
+            head -c $((128*1024*1024)) /dev/zero | tr '\0' '\377' > full.bin
+          fi
+          echo "dump: $(stat -c%s full.bin)B"
+          echo "has_dump=$([ -s full.bin ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: fetch the U-Boot build under test
+        run: |
+          set -euo pipefail
+          url=$(gh api repos/${{ github.repository }}/releases/latest \
+                --jq '.assets[] | select(.name|test("^u-boot_.*\\.img$")) | .browser_download_url' \
+                | head -1)
+          echo "u-boot asset: $url"
+          curl -sSL --max-time 300 -o u-boot.img "$url"
+          echo "u-boot: $(stat -c%s u-boot.img)B"
+
+      - name: compose the 128MiB flash image
+        run: |
+          python3 qemu-mt7621/scripts/compose_flash.py \
+            -o flash.bin --uboot u-boot.img --dump full.bin
+          sha256sum flash.bin
+
+      - name: run the simulated boot
+        run: |
+          set -uo pipefail
+          /tmp/qemu-mt7621-build/build/qemu-system-mipsel \
+            -M mi-router-4 -m 128 \
+            -drive if=mtd,file=flash.bin,format=raw \
+            -nographic -no-reboot -serial mon:stdio \
+            -d guest_errors,unimp \
+            > boot.log 2>&1 &
+          QPID=$!
+          sleep 90
+          kill $QPID 2>/dev/null || true
+          wait $QPID 2>/dev/null || true
+          echo "=================== serial log ==================="
+          cat boot.log
+          echo "==================================================="
+
+      - name: grade the boot
+        run: bash qemu-mt7621/scripts/run_boot.sh \
+          /tmp/qemu-mt7621-build/build/qemu-system-mipsel flash.bin 5 boot.log
+
+      - name: upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt7621-boot
+          path: |
+            boot.log
+          if-no-files-found: warn
