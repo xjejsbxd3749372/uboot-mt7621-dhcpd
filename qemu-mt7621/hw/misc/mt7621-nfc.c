@@ -14,6 +14,10 @@
 #include "qemu/module.h"
 #include "hw/qdev-properties.h"
 #include "hw/misc/mt7621-nfc.h"
+/* blk_pread() lives in the private block layer; without this declaration the
+ * compiler assumes it returns int, which would truncate the 64-bit byte
+ * count the NAND model compares against. */
+#include "block_int.h"
 
 /* ---- NFI register offsets (from mt7621_nand.h) ---- */
 #define NFI_CNFG_REG16      0x000
@@ -231,9 +235,9 @@ static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
     }
     case NFI_ADDRCNTR_REG16: {
         uint32_t sec = s->stream_pos / 512;
-        uint32_t addr = s->stream_pos & 0x1ff;
+        uint32_t col = s->stream_pos & 0x1ff;
 
-        val = ((sec & 0xf) << SEC_CNTR_S) | (addr & 0x3ff);
+        val = ((sec & 0xf) << SEC_CNTR_S) | (col & 0x3ff);
         break;
     }
     case NFI_CSEL_REG16:
