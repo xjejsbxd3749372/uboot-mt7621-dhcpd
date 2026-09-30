@@ -69,6 +69,13 @@ typedef struct MT7621Scratch {
      */
     hwaddr mirror_src;
     hwaddr mirror_dst;
+    /*
+     * A hardware status register: the firmware reads it but nothing writes it,
+     * so a plain read-back placeholder leaves it at 0 and the code asserts.
+     * const_val is returned while the guest has not stored anything itself.
+     */
+    hwaddr const_reg;
+    uint32_t const_val;
 } MT7621Scratch;
 
 /*
@@ -85,10 +92,13 @@ static const struct {
     const char *name;
     hwaddr mirror_src;
     hwaddr mirror_dst;
+    hwaddr const_reg;
+    uint32_t const_val;
 } mt7621_scratch_map[MT7621_N_SCRATCH] = {
-    { 0x1e000000, 0x000c00, "mt7621-sysc-wdt-gpio", 0, 0 },  /* up to UART0 */
-    { 0x1e000c20, 0x0000e0, "mt7621-uart0-tail", 0, 0 },     /* ends 0xc20 */
-    { 0x1e000d20, 0x0000e0, "mt7621-uart1-tail", 0, 0 },
+    { 0x1e000000, 0x000c00, "mt7621-sysc-wdt-gpio", 0, 0,
+    0x44, 0x00110100 },   /* CUR_CLK_STS: FDIV=1, OCP=1, SAME_FREQ */  /* up to UART0 */
+    { 0x1e000c20, 0x0000e0, "mt7621-uart0-tail", 0, 0, 0, 0 },     /* ends 0xc20 */
+    { 0x1e000d20, 0x0000e0, "mt7621-uart1-tail", 0, 0, 0, 0 },
     /*
      * Every window below is chosen so it cannot overlap a real device: the
      * NAND controller sits at 0x1e003000..0x1e004000, and letting a placeholder
@@ -96,7 +106,7 @@ static const struct {
      * corrupts the flatview section table - QEMU died in the NAND driver with
      * physmem.c: iotlb_to_section: Assertion `section_index < d->map.sections_nb'.
      */
-    { 0x1e000e20, 0x0021e0, "mt7621-gdma-gap", 0, 0 },       /* ends at NFI */
+    { 0x1e000e20, 0x0021e0, "mt7621-gdma-gap", 0, 0, 0, 0 },       /* ends at NFI */
     /*
      * DRAMC gets its own window on purpose. The boot chain runs the legacy
      * DDR calibration blob - mt7621_stage_sram_noprint.bin, exactly 13928
@@ -106,10 +116,10 @@ static const struct {
      * dominant-address report names the register it waits on instead of being
      * drowned out by instruction fetches from the blob itself.
      */
-    { 0x1e004000, 0x001000, "mt7621-crypto-gap", 0, 0 },     /* after NFI ECC */
-    { 0x1e005000, 0x001000, "mt7621-dramc", 0, 0 },
-    { 0x1e006000, 0x01fa000, "mt7621-fe-and-friends", 0, 0 }, /* to 0x1e200000 */
-    { 0x1fbc0000, 0x040000, "mt7621-cm", 0x3a008, 0x3c008 },
+    { 0x1e004000, 0x001000, "mt7621-crypto-gap", 0, 0, 0, 0 },     /* after NFI ECC */
+    { 0x1e005000, 0x001000, "mt7621-dramc", 0, 0, 0, 0 },
+    { 0x1e006000, 0x01fa000, "mt7621-fe-and-friends", 0, 0, 0, 0 }, /* to 0x1e200000 */
+    { 0x1fbc0000, 0x040000, "mt7621-cm", 0x3a008, 0x3c008, 0, 0 },
     /*
      * MIPS CM: join_coherent_domain() in arch/mips/mach-mt7621/launch_ll.S
      * writes the whole core mask to GCR_Cx_COHERENCE (CDMM+0x2008 = window
@@ -290,12 +300,29 @@ static uint64_t mt7621_scratch_read(void *opaque, hwaddr addr, unsigned size)
     mt7621_scratch_touch(sc, addr);
     if (sc->mirror_dst && addr == sc->mirror_dst) {
         addr = sc->mirror_src;
+    } else if (sc->const_reg && addr == sc->const_reg && !stored_word(sc, addr)) {
+        /* hardware status the firmware reads but nothing writes */
+        for (i = 0; i < size; i++) {
+            v |= (uint64_t)((sc->const_val >> (8 * i)) & 0xff) << (8 * i);
+        }
+        return v;
     }
     for (i = 0; i < size; i++) {
         v |= (addr + i < sc->size) ? (uint64_t)sc->buf[addr + i] << (8 * i)
                                    : (uint64_t)0xff << (8 * i);
     }
     return v;
+}
+
+static uint32_t stored_word(MT7621Scratch *sc, hwaddr addr)
+{
+    uint32_t w = 0;
+    unsigned i;
+
+    for (i = 0; i < 4 && addr + i < sc->size; i++) {
+        w |= (uint32_t)sc->buf[addr + i] << (8 * i);
+    }
+    return w;
 }
 
 static void mt7621_scratch_write(void *opaque, hwaddr addr, uint64_t val,
@@ -578,6 +605,8 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
         s->scratch[i].name = mt7621_scratch_map[i].name;
         s->scratch[i].mirror_src = mt7621_scratch_map[i].mirror_src;
         s->scratch[i].mirror_dst = mt7621_scratch_map[i].mirror_dst;
+        s->scratch[i].const_reg = mt7621_scratch_map[i].const_reg;
+        s->scratch[i].const_val = mt7621_scratch_map[i].const_val;
         s->scratch[i].buf = g_malloc0(s->scratch[i].size);
         memory_region_init_io(&s->scratch_mr[i], OBJECT(s),
                               &mt7621_scratch_ops, &s->scratch[i],
