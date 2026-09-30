@@ -174,6 +174,68 @@ there. From that point the code running is the real U-Boot.
 | L3 | the main U-Boot banner, plus NAND/MTD probe output |
 | L4 | a Linux `Linux version` / `Booting Linux` line |
 
+## Where the simulated boot gets to
+
+Graded by `scripts/run_boot.sh`, run 36776959760:
+
+```
+U-Boot SPL 2018.09 (Sep 30 2026)
+Trying to boot from NAND
+nfc[1/40]: wr off=0x08 val=0x3        NFI_CON
+nfc[6/40]: wr off=0x00 val=0x40       NFI_CNFG
+nfc[8/40]: wr off=0x0c val=0x30c77fff NFI_ACCON
+```
+
+| level | status |
+|---|---|
+| L1 console output | **PASS** |
+| L2 SPL stage + NAND/DRAM init | **PASS** |
+| L3 main U-Boot banner | FAIL - one firmware assertion away |
+
+The chain that got there, each step found by instrumentation rather than guesswork:
+
+1. **CPU model** - `24KEc` reads `mfc0 $2,2` (TCBind, gated on `Config3.MT`) as
+   unimplemented, returns `~0`, and the SPL takes a wrong branch into FPU
+   code: `coprocessor unusable`. `34Kf` has MT and FPU.
+2. **`0x1fc00000` flash-mmap** - this is both the MIPS BEV=1 vector base
+   (`MT7621_FLASH_MMAP_BASE`) and where the vectors land. Unmapped, one
+   exception stranded the CPU retrying the same rejected read forever; the
+   serial log reached 4.2GB.
+3. **CDMM size** - the SPL's `lw t1, 0x2028(t0)` with `t0 = CKSEG1ADDR(0x1fbf8000)`
+   fell 0x28 past a 0x2000 placeholder. Now 0x8000, ending exactly at flash-mmap.
+4. **The SPL stack lives in the FE window** - `CONFIG_SYS_INIT_SP_ADDR
+   0xbe10d000` is kseg1 of 0x1e10d000, inside `MT7621_FE_BASE+MT7621_FE_SIZE`.
+   A write-dropping placeholder made every saved register read back 0, so
+   `jr $ra` went to 0x0. Placeholders are now memory-backed.
+5. **DDR calibration blob** - `mt7621_stage_sram_noprint.bin` is exactly 13928
+   bytes, the count in the memcpy the sampler catches, and it is copied to the
+   FE SRAM at `0xbe108800` and executed. It cannot complete against a
+   placeholder DRAMC, so the model stubs that entry with `jr ra` - QEMU already
+   provides working RAM.
+6. **`get_ram_size(KSEG1, SZ_512M)`** probes past 128MB; the unmapped range
+   caused `Invalid read at addr 0x10000000` -> bus error -> vector at
+   `0xbfc00380` -> executing flash bytes. The holes above 128MB are now mapped.
+7. **`join_coherent_domain()`** (`launch_ll.S`) spins on `GCR_CO_COHERENCE`
+   (CDMM+0x4008) until non-zero, and nothing ever writes that offset. Reads are
+   mirrored from `GCR_Cx_COHERENCE`, which the caller does write.
+8. **`SYSCTL+0x44` (`CUR_CLK_STS`)** - a hardware status register, never
+   written by the firmware. `ext t1, t0, 8, 4; teq t1, $0` needs
+   `CUR_CPU_FDIV` non-zero, otherwise `trap`. Now supplied.
+9. **Current blocker** - `teq a1, $0` at `0x80105844`, in a 64-bit division
+   helper called from `0x80105d08` with `a1 = lo(1000 * arg0)` where `arg0`
+   came back as 0. Same shape as the previous two: a value the firmware reads
+   from hardware that the model still reports as zero.
+
+Diagnosis was driven by three pieces of instrumentation added to the model,
+all bounded so they cannot flood the log:
+
+- `mt7621-sample` - PC/sp/ra/t9/EPC/status every 20ms
+- `mt7621-region` - first entry into each 4KB page, up to 500 lines
+- `scratch[...]: dominant=<addr>` - one line per window per second naming the
+  address that dominates its traffic (Boyer-Moore, so a polling loop wins even
+  with interleaved stack traffic)
+- `nfc[n/40]` - the first 40 NFI register accesses
+
 ## What is not modelled, and why it is fine
 
 - **MT7603 / MT7612 radios.** Private PCIe devices, no model exists. The PCIe
