@@ -275,7 +275,16 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
         { "usb-phy",   DEV_USB_PHY,  0x2000 },
         { "gic",       DEV_GIC,      0x20000 },
         { "cpc",       DEV_CPC,      0x2000 },
-        { "cdmm",      DEV_CDMM,     0x2000 },
+        /*
+         * CDMM must reach 0x1fc00000: the SPL reads CM registers through it
+         * (arch/mips/mach-mt7621/spl/start.S: lw t1, 0x2028(t0) with
+         * t0 = CKSEG1ADDR(0x1fbf8000)). At the original 0x2000 size that
+         * read at 0x1fbfa028 fell off the end and raised
+         * "Invalid read at addr 0x1FBFA028 ... data bus error" before the
+         * SPL ever reached the NAND driver. 0x8000 ends exactly at the
+         * flash-mmap window, so it cannot overlap it.
+         */
+        { "cdmm",      DEV_CDMM,     0x8000 },
     };
 
     for (unsigned i = 0; i < ARRAY_SIZE(unimp); i++) {
