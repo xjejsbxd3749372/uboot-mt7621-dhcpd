@@ -77,12 +77,76 @@ with real OOB, which is not something a logical partition dump can provide.
 ```sh
 bash scripts/build_qemu.sh                 # ~15-30 min, builds mipsel-softmmu only
 python3 scripts/compose_flash.py \
-    -o flash.bin --uboot u-boot.img --dump full.bin
+    -o flash.bin --uboot u-boot-mt7621.bin --dump full.bin
 bash scripts/run_boot.sh \
-    /tmp/qemu-mt7621-build/build/qemu-system-mipsel flash.bin 60 boot.log
+    /tmp/qemu-mt7621-build/build/qemu-system-mipsel flash.bin 90 boot.log 3
 ```
 
-or just run the workflow, which does all of it.
+or just run the workflow, which does all of it. The image path reaches the
+machine as `-M mi-router-4,flash=<path>`; `MI_ROUTER4_FLASH` is accepted as a
+fallback.
+
+## Which release asset actually boots
+
+The release carries two images and only one of them is a flash image:
+
+| asset | what it is |
+|---|---|
+| `u-boot-mt7621_*.bin` | **the flash image.** uImage at `0x0` (`MT7621 NAND`, 72192B, load/entry `0x80100000`) = SPL, plus the LZMA U-Boot uImage at `0x20000` (176483B, load/entry `0x80200000`). This matches `CONFIG_SPL_PAYLOAD="u-boot-lzma.img"` and it is what the hardware runs. |
+| `u-boot_*.img` | just `mkimage(u-boot.bin)` of the uncompressed main U-Boot (520353B payload). No first stage. BootROM would jump straight to main U-Boot. |
+
+CI boots the first and decides pass/fail on it, then boots the second as a
+comparison: if the comparison reaches a banner while the real chain does not,
+the SPL stage is the problem, not U-Boot.
+
+## What is in the stock dump at offset 0
+
+Not stock U-Boot. `full.bin` starts with a **Breed** bootloader uImage
+(payload 105404B, load/entry `0xa0201000`, the kseg1 uncached mapping), which
+is the third-party recovery bootloader flashed over the original one - the
+right choice for a board with no serial header. Leftovers of the original
+`Ralink U-Boot` (`DRAM:` at `0x23958`, `Ralink` at `0x23de8`) sit past the
+end of that payload, so the first 512K of the dump is not one coherent
+image. `compose_flash.py` therefore overwrites `0x0..0x80000` wholesale with
+the build under test and copies everything from `0x80000` on verbatim, which
+keeps the real `u-boot-env`, `bdata` and `factory` calibration.
+
+## QEMU 9.2 API traps hit on the way
+
+Every one of these cost a CI cycle before it was found:
+
+- `#include "hw/mips/cpudevs.h"` no longer exists. Use `target/mips/cpu.h`,
+  which is what `hw/mips/malta.c` uses for the same calls.
+- `mips_cpu_create_with_clock()` takes **three** arguments now:
+  `(type, refclk, TARGET_BIG_ENDIAN)`, and it realizes the CPU internally.
+  For `mipsel` `TARGET_BIG_ENDIAN` is 0, which is correct for this board.
+- `MIPS_CPU_TYPE_NAME()` moved to `target/mips/cpu-qom.h`.
+- `blk_pread()` is gone from 9.2 and the surviving replacements want a
+  `BdrvChild` reachable only through private block-layer structures. This
+  model therefore never touches the block layer: the machine reads the image
+  with plain stdio into `nfc->data`. 128MiB of host RAM is the trade.
+- `serial_hd()` has no declaration in any 9.2 header. The equivalent is
+  `qemu_chr_find()` from `chardev/char.h`, and it resolves the same object
+  because `-serial` labels its chardev `serialN` (`system/vl.c`) and chardevs
+  are registered as children of the chardevs root **by label**
+  (`chardev/char.c`).
+- `sysbus_mmio_map(dev, n, ...)` needs `n` to exist: a SerialMM has one MMIO
+  region, so the `0xbe000c00` console alias has to be a second
+  `memory_region_add_subregion()` of that same region.
+- **The `flash` machine property:** registering it with the generic
+  `object_class_property_add(oc, "flash", "string", get, set, ...)` while
+  passing `char *(*)(Object *, void *)` callbacks compiles with a warning and
+  then fails at runtime with `Parameter 'flash' is unexpected`. The generic
+  API wants `ObjectPropertyAccessor` callbacks that take a `Visitor`, so the
+  key is never consumed by a visitor and `qobject_input_check_struct()`
+  rejects it. The right API is `object_class_property_add_str()` with
+  `char *(*)(Object *, Error **)` and `void (*)(Object *, const char *, Error **)`.
+- The `flash` symbol must be appended to
+  `configs/devices/mipsel-softmmu/default.mak`, not `mips-softmmu/` (they are
+  different directories), and the meson `when:` symbol must match the Kconfig
+  name exactly. A mismatch drops the file from the build with **no** warning
+  and links a complete QEMU with no model in it - hence the object-file check
+  at the end of `build_qemu.sh`.
 
 The machine emulates the boot ROM's one important act: it reads the NAND
 uImage at offset 0, copies the payload to the address in the header
