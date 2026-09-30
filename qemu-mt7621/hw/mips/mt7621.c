@@ -291,6 +291,17 @@ static void mt7621_scratch_touch(MT7621Scratch *sc, hwaddr addr)
     }
 }
 
+static uint32_t stored_word(MT7621Scratch *sc, hwaddr addr)
+{
+    uint32_t w = 0;
+    unsigned i;
+
+    for (i = 0; i < 4 && addr + i < sc->size; i++) {
+        w |= (uint32_t)sc->buf[addr + i] << (8 * i);
+    }
+    return w;
+}
+
 static uint64_t mt7621_scratch_read(void *opaque, hwaddr addr, unsigned size)
 {
     MT7621Scratch *sc = opaque;
@@ -312,17 +323,6 @@ static uint64_t mt7621_scratch_read(void *opaque, hwaddr addr, unsigned size)
                                    : (uint64_t)0xff << (8 * i);
     }
     return v;
-}
-
-static uint32_t stored_word(MT7621Scratch *sc, hwaddr addr)
-{
-    uint32_t w = 0;
-    unsigned i;
-
-    for (i = 0; i < 4 && addr + i < sc->size; i++) {
-        w |= (uint32_t)sc->buf[addr + i] << (8 * i);
-    }
-    return w;
 }
 
 static void mt7621_scratch_write(void *opaque, hwaddr addr, uint64_t val,
