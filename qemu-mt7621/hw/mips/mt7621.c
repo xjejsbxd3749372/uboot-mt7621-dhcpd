@@ -518,6 +518,31 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion_overlap(get_system_memory(), 0x1e108800,
                                         &s->dramc_stub, 1);
 
+    /*
+     * Fill the two holes between RAM and the peripheral windows.
+     *
+     * post_lowlevel_init() does `gd->ram_size = get_ram_size((void *)KSEG1,
+     * SZ_512M)', which walks memory up to 512MB looking for the end of RAM.
+     * This board has 128MB, and with the range above it simply unmapped, the
+     * first probe past 128MB produced
+     *
+     *   Invalid read at addr 0x10000000, size 4, region '(null)', rejected
+     *     -> data bus error (cause 7)
+     *     -> vector at 0xbfc00380, which is our flash-mmap window full of
+     *        image bytes, which then executed garbage and raised a trap
+     *        (cause 13), looping forever before the console was ever inited.
+     *
+     * create_unimplemented_device() is exactly right here: reads return 0 so
+     * the pattern test fails and get_ram_size() correctly reports 128MB, and
+     * writes are dropped, so nothing faults. These two regions plus RAM, the
+     * peripheral window, the GIC/CPC/CDMM window and flash-mmap leave no hole
+     * anywhere in the first 512MB.
+     */
+    create_unimplemented_device("mt7621-dram-hole", 0x08000000,
+                                0x1e000000 - 0x08000000);
+    create_unimplemented_device("mt7621-apu-hole", 0x1e200000,
+                                0x1fbc0000 - 0x1e200000);
+
     for (unsigned i = 0; i < MT7621_N_SCRATCH; i++) {
         s->scratch[i].size = mt7621_scratch_map[i].size;
         s->scratch[i].name = mt7621_scratch_map[i].name;
