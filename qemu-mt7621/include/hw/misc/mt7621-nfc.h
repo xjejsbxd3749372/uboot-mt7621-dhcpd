@@ -12,10 +12,6 @@
 #include "qom/object.h"
 #include "hw/sysbus.h"
 #include "exec/memory.h"
-/* QEMU 9.2 has no public include/block/block-backend.h; BlockConf (and the
- * BlockBackend typedef) are declared by hw/block/block.h, which forwards to
- * system/block-backend-common.h. */
-#include "hw/block/block.h"
 
 /* MT7621 NAND geometry as configured for Mi Router 4 (128MB SPI-NAND). */
 #define MT7621_NFC_PAGE_SIZE      2048
@@ -38,14 +34,21 @@ struct mt7621NfcState {
     MemoryRegion ecc_mr;
 
     /*
-     * Backing store: the whole 128MiB NAND image, logical layout
-     * (2048B of page data per page, no OOB interleaved).
+     * Backing store: the whole NAND image, held in host memory.
      *
-     * QEMU 9.2 dropped DEFINE_PROP_BLOCK, so the backend is carried by a
-     * BlockConf; conf.blk is the BlockBackend handed to us by the
-     * "drive" property and is released by QEMU when the device is gone.
+     * QEMU 9.2 deleted the non-coroutine blk_pread() and DEFINE_PROP_BLOCK
+     * that a device like this used to read a BlockBackend from, and the
+     * surviving replacements all take a BdrvChild that is only reachable
+     * through private block-layer structures. Rather than chase that, the
+     * machine loads the image once and hands the buffer over: a read is then
+     * a memcpy, with no dependency on any of the block APIs that moved. The
+     * cost is 128MiB of host RAM and no -drive passthrough, which is the right
+     * trade for a model whose only job is to boot U-Boot. Writes modify this
+     * buffer and are never flushed, so a simulated boot cannot damage the
+     * dump it was given.
      */
-    BlockConf conf;
+    uint8_t *data;
+    uint64_t size;
 
     /* registers the guest can read back */
     uint16_t cnfg, con, pagefmt, strdata, csr, iocon, mastersta;
