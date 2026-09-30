@@ -31,6 +31,13 @@ if [ "$SECS" != "0" ]; then
     rm -f "$LOG"
     # The property is authoritative; the env var is the fallback for the case
     # where machine properties are applied after mc->init.
+    # -d int records every exception/interrupt with its code and PC. Without
+    # it an early exception is only visible as the CPU spinning on the
+    # unmapped 0xBFC00380 vector, which looks like "nothing happened".
+    # head -c bounds the file: a guest looping on an unmapped address fills
+    # gigabytes in 90s (observed: 4.2GB), which makes the grading crawl.
+    # -d writes to stderr, so 2>&1 has to be merged in before the pipe for
+    # head to bound the diagnostics as well as the console.
     MI_ROUTER4_FLASH="$FLASH" timeout -k 10 "$SECS" \
         "$QEMU" \
         -M mi-router-4,flash="$FLASH" \
@@ -38,9 +45,10 @@ if [ "$SECS" != "0" ]; then
         -nographic \
         -no-reboot \
         -serial mon:stdio \
-        -d guest_errors,unimp \
-        > "$LOG" 2>&1
-    echo "-- qemu exit: $? (124 = hit the ${SECS}s limit, expected)"
+        -d guest_errors,unimp,int \
+        2>&1 | head -c 400000000 > "$LOG"
+    rc=${PIPESTATUS[0]}
+    echo "-- qemu exit: $rc (124 = hit the ${SECS}s limit, expected)"
 else
     echo "== grading existing log: $LOG =="
 fi
