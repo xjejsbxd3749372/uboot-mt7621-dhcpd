@@ -295,11 +295,23 @@ static void mt7621_pc_sample(void *opaque)
     MT7621SoCState *s = opaque;
     const CPUMIPSState *env = &s->cpu->env;
 
+    /*
+     * sp/ra/t9 answer the question the PC alone cannot: whether the code
+     * running in the FE SRAM window (0x1e108000..0x1e10c000, right under the
+     * stack top 0x1e10d000) is a routine the SPL deliberately relocated there
+     * - sp inside 0xbe10xxxx and ra pointing back into the SPL image - or the
+     * CPU executing its own stack as instructions, which means a bad jump.
+     */
     fprintf(stderr,
-            "mt7621-sample: pc=" TARGET_FMT_lx " epc=" TARGET_FMT_lx
-            " status=" TARGET_FMT_lx " cause=" TARGET_FMT_lx "\n",
-            (target_ulong)env->active_tc.PC, (target_ulong)env->CP0_EPC,
-            (target_ulong)env->CP0_Status, (target_ulong)env->CP0_Cause);
+            "mt7621-sample: pc=" TARGET_FMT_lx " sp=" TARGET_FMT_lx
+            " ra=" TARGET_FMT_lx " t9=" TARGET_FMT_lx
+            " epc=" TARGET_FMT_lx " status=" TARGET_FMT_lx "\n",
+            (target_ulong)env->active_tc.PC,
+            (target_ulong)env->active_tc.gpr[29],
+            (target_ulong)env->active_tc.gpr[31],
+            (target_ulong)env->active_tc.gpr[25],
+            (target_ulong)env->CP0_EPC,
+            (target_ulong)env->CP0_Status);
     timer_mod(s->pc_sample,
               qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 100 * 1000000ULL);
 }
