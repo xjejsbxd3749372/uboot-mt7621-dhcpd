@@ -13,6 +13,7 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
+#include "qemu/log.h"
 #include "hw/char/serial.h"
 #include "hw/char/serial-mm.h"
 #include "chardev/char.h"
@@ -28,6 +29,9 @@
 #include "sysemu/blockdev.h"
 /* BlockConf / BlockBackend are declared by hw/block/block.h in 9.2. */
 #include "hw/block/block.h"
+/* blk_pread() is part of the private block layer, only reachable through
+ * block_int.h - the public headers deliberately do not expose it. */
+#include "block_int.h"
 /* BlockBackend itself is a generated typedef; qemu/typedefs.h declares it. */
 #include "qemu/typedefs.h"
 /* MIPSCPU, MIPS_CPU_TYPE_NAME, cpu_mips_*_init() live in the target headers,
@@ -164,12 +168,13 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
      * SPL and early U-Boot write their console to the 0xbe000c00 alias.
      * serial-mm only publishes a single MMIO region (index 0), so the
      * alias is a second mapping of that same region rather than a second
-     * sysbus region.
+     * sysbus region. memory_region_ref() returns void, so the add_subregion
+     * call takes the ref inline.
      */
     memory_region_add_subregion(get_system_memory(), s->memmap[DEV_DBG_UART],
-                                memory_region_ref(
-                                    sysbus_mmio_get_region(
-                                        SYS_BUS_DEVICE(s->uart[0]), 0)));
+                                sysbus_mmio_get_region(
+                                    SYS_BUS_DEVICE(s->uart[0]), 0));
+    memory_region_ref(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->uart[0]), 0));
 
     /*
      * Everything else is modelled as unimplemented: the register reads return
