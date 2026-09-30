@@ -15,6 +15,7 @@
 #include "qemu/module.h"
 #include "hw/char/serial.h"
 #include "hw/char/serial-mm.h"
+#include "chardev/char.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "hw/mips/mips.h"
@@ -140,7 +141,17 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
 
     /* three 16550 UARTs with a 2-bit register shift */
     for (int i = 0; i < 3; i++) {
-        qdev_prop_set_chr(DEVICE(s->uart[i]), "chardev", serial_hd(i));
+        /*
+         * serial_hd() is a private helper with no stable declaration in the
+         * 9.2 headers; qemu_chr_find() (chardev/char.h) is the documented
+         * lookup. It returns NULL when the chardev was not created, which is
+         * fine - the UART just stays disconnected and the console is unused.
+         */
+        Chardev *chr = qemu_chr_find(i == 0 ? "serial0" :
+                                     i == 1 ? "serial1" : "serial2");
+        if (chr) {
+            qdev_prop_set_chr(DEVICE(s->uart[i]), "chardev", chr);
+        }
         qdev_prop_set_uint8(DEVICE(s->uart[i]), "regshift", 2);
         qdev_prop_set_uint8(DEVICE(s->uart[i]), "endianness",
                             TARGET_BIG_ENDIAN ? DEVICE_BIG_ENDIAN
