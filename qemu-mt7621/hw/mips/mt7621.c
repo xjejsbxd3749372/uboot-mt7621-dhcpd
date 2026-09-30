@@ -152,6 +152,9 @@ struct MT7621SoCState {
     SerialMM *uart[3];
     SysBusDevice *nfc;
     QEMUTimer *pc_sample;
+    /* region-transition trace: which 4KB page the CPU is running in, in order */
+    hwaddr last_region;
+    int n_regions;
     MemoryRegion flash_mmap_mr;
     MT7621Scratch scratch[MT7621_N_SCRATCH];
     MemoryRegion scratch_mr[MT7621_N_SCRATCH];
@@ -295,6 +298,22 @@ static void mt7621_pc_sample(void *opaque)
     MT7621SoCState *s = opaque;
     const CPUMIPSState *env = &s->cpu->env;
 
+    {
+        hwaddr region = ((target_ulong)env->active_tc.PC) >> 12;
+
+        if (region != s->last_region) {
+            s->last_region = region;
+            if (s->n_regions < 500) {
+                s->n_regions++;
+                fprintf(stderr, "mt7621-region[%d]: pc=" TARGET_FMT_lx
+                        " sp=" TARGET_FMT_lx " t9=" TARGET_FMT_lx "\n",
+                        s->n_regions, (target_ulong)env->active_tc.PC,
+                        (target_ulong)env->active_tc.gpr[29],
+                        (target_ulong)env->active_tc.gpr[25]);
+            }
+        }
+    }
+
     /*
      * sp/ra/t9 answer the question the PC alone cannot: whether the code
      * running in the FE SRAM window (0x1e108000..0x1e10c000, right under the
@@ -313,7 +332,7 @@ static void mt7621_pc_sample(void *opaque)
             (target_ulong)env->CP0_EPC,
             (target_ulong)env->CP0_Status);
     timer_mod(s->pc_sample,
-              qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 100 * 1000000ULL);
+              qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 20 * 1000000ULL);
 }
 
 static void mt7621_soc_init(Object *obj)
@@ -435,11 +454,11 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
                                     &s->scratch_mr[i]);
     }
 
-    /* start the PC sampler; one sample every 100ms of wall time */
+    /* start the PC sampler: one sample every 20ms of wall time */
     s->pc_sample = timer_new(QEMU_CLOCK_REALTIME, SCALE_NS,
                              mt7621_pc_sample, s);
     timer_mod(s->pc_sample, qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
-                            100 * 1000000ULL);
+                            20 * 1000000ULL);
 
 }
 
