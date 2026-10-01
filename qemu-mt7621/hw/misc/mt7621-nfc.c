@@ -320,16 +320,6 @@ static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
          * a NAND device to boot from.
          */
         val = 0;
-        break;        /*
-         * STA_CMD (bit 0) means "a command is in flight".  The driver waits
-         * for it to CLEAR: nfc_wait_status_ready() in
-         * drivers/mtd/nand/mt7621_nand.c polls !(val & STA_CMD) until the
-         * timeout, and BUSY is likewise checked as an error.  This model
-         * finishes a command the moment it is written, so both stay clear -
-         * asserting STA_CMD and leaving it set stalled nand_init() for the
-         * whole run and sent the SPL down the ymodem emergency path.
-         */
-        val = (fsm << NAND_FSM_S) | (remain & 0x1f);
         break;
     }
     case NFI_FIFOSTA_REG16: {
