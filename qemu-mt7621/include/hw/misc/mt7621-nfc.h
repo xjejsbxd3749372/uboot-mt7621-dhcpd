@@ -72,6 +72,15 @@ struct mt7621NfcState {
     int page_armed;         /* READ0+address+READSTART done, data available */
     int page_fmt;           /* AUTO_FMT_EN: only 2048B data on the PIO stream */
 
+    /*
+     * What the next PIO data phase must deliver. The command arrives before
+     * the address cycle, so a page cannot be fetched when the command is
+     * decoded; the first NFI_DATAR read arms it instead. NFC_DATA_ID covers
+     * NAND_CMD_READID, whose bytes come from the id[] below rather than from
+     * the backing image.
+     */
+    int pending_data;       /* NFC_DATA_NONE / _PAGE / _ID */
+
     /* statistics, printed on request via info properties */
     uint64_t n_page_reads;
     uint64_t n_cmds;
