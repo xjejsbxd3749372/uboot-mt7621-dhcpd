@@ -93,6 +93,18 @@ typedef struct MT7621Scratch {
      */
     const uint32_t *reg_defaults;
     unsigned n_reg_defaults;
+    /*
+     * GMAC PIAC PHY access: offset within this region, 0 if it has none.
+     * bit31 (PHY_ACS_ST) is a start-then-done flag. mt7621_eth.c writes it to
+     * launch an MDC frame and then polls for it to clear (wait_for_bit_le32,
+     * 5000 tries). A plain read-back register never clears it, so every MDIO
+     * frame - and there are thousands during PHY setup and link detection -
+     * burned its whole timeout; that was the 52,484,977 accesses to one
+     * register. The hardware clears it when the frame finishes, modelled as
+     * "cleared by the next read".
+     */
+    hwaddr piac_reg;
+    bool piac_pending;
 } MT7621Scratch;
 
 /*
@@ -382,6 +394,16 @@ static uint64_t mt7621_scratch_read(void *opaque, hwaddr addr, unsigned size)
     uint32_t defval = 0;
 
     mt7621_scratch_touch(sc, addr);
+
+    /*
+     * A pending PHY access completes: PHY_ACS_ST comes back clear so
+     * wait_for_bit_le32() returns instead of spinning out its timeout.
+     */
+    if (sc->piac_pending && addr == sc->piac_reg) {
+        sc->piac_pending = false;
+        return stored_word(sc, addr) & ~((uint32_t)(1u << 31));
+    }
+
     if (sc->mirror_dst && addr == sc->mirror_dst) {
         addr = sc->mirror_src;
     } else if (sc->n_reg_defaults && !stored_word(sc, addr) &&
@@ -414,6 +436,10 @@ static void mt7621_scratch_write(void *opaque, hwaddr addr, uint64_t val,
     mt7621_scratch_touch(sc, addr);
     for (i = 0; i < size && addr + i < sc->size; i++) {
         sc->buf[addr + i] = val >> (8 * i);
+    }
+
+    if (addr == sc->piac_reg && ((uint32_t)val & (1u << 31))) {
+        sc->piac_pending = true;
     }
 }
 
@@ -714,6 +740,9 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
                                 &mt7621_apu_hole);
 
     for (unsigned i = 0; i < MT7621_N_SCRATCH; i++) {
+        const hwaddr rbase = mt7621_scratch_map[i].addr;
+        const hwaddr rsize = mt7621_scratch_map[i].size;
+
         s->scratch[i].size = mt7621_scratch_map[i].size;
         s->scratch[i].name = mt7621_scratch_map[i].name;
         s->scratch[i].mirror_src = mt7621_scratch_map[i].mirror_src;
@@ -722,6 +751,17 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
         s->scratch[i].const_val = mt7621_scratch_map[i].const_val;
         s->scratch[i].reg_defaults = mt7621_scratch_defaults[i];
         s->scratch[i].n_reg_defaults = mt7621_scratch_defaults_n[i];
+        /*
+         * GMAC_PIAC lives at 0x1e110004 (gmac_base 0x1e110000 + 4). Derive its
+         * offset from whichever window covers it rather than hard-coding the
+         * window's index in the table above.
+         */
+        if (rbase <= 0x1e110004 && 0x1e110004 < rbase + rsize) {
+            s->scratch[i].piac_reg = 0x1e110004 - rbase;
+        } else {
+            s->scratch[i].piac_reg = 0;
+        }
+        s->scratch[i].piac_pending = false;
         s->scratch[i].buf = g_malloc0(s->scratch[i].size);
         memory_region_init_io(&s->scratch_mr[i], OBJECT(s),
                               &mt7621_scratch_ops, &s->scratch[i],
