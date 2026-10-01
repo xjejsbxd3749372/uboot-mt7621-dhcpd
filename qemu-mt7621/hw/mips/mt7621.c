@@ -73,6 +73,14 @@ typedef struct MT7621Scratch {
      * A hardware status register: the firmware reads it but nothing writes it,
      * so a plain read-back placeholder leaves it at 0 and the code asserts.
      * const_val is returned while the guest has not stored anything itself.
+     *
+     * arch/mips/mach-mt7621/clocks.c: mt7621_get_clocks() computes
+     *   cpu_clk = cpu_clk / REG_GET_VAL(CUR_CPU_FDIV, cur_clk)
+     *                * REG_GET_VAL(CUR_CPU_FFRAC, cur_clk);
+     * so both halves of MT7621_SYS_CUR_CLK_STS_REG (0x44) must be non-zero.
+     * FFRAC occupies bits 4:0; with it clear the product collapses to 0,
+     * gd->cpu_clk stays 0, get_tbclk() returns 0 and tick_to_time()'s
+     * do_div(tick, div) is a divide by zero - the teq at 0x80105844.
      */
     hwaddr const_reg;
     uint32_t const_val;
@@ -96,7 +104,7 @@ static const struct {
     uint32_t const_val;
 } mt7621_scratch_map[MT7621_N_SCRATCH] = {
     { 0x1e000000, 0x000c00, "mt7621-sysc-wdt-gpio", 0, 0,
-    0x44, 0x00110100 },   /* CUR_CLK_STS: FDIV=1, OCP=1, SAME_FREQ */  /* up to UART0 */
+    0x44, 0x00110101 },   /* CUR_CLK_STS: FDIV=1, FFRAC=1, OCP=1, SAME_FREQ */  /* up to UART0 */
     { 0x1e000c20, 0x0000e0, "mt7621-uart0-tail", 0, 0, 0, 0 },     /* ends 0xc20 */
     { 0x1e000d20, 0x0000e0, "mt7621-uart1-tail", 0, 0, 0, 0 },
     /*
