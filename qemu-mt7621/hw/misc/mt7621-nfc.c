@@ -129,6 +129,15 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
         s->fdmm[i] = ldl_le_p(fdm + 4);
     }
 
+    if (s->n_page_trace < NFC_PAGE_TRACE_MAX) {
+        s->n_page_trace++;
+        fprintf(stderr,
+                "nfc: load page=%u col=%u off=0x%llx %s word0=0x%08x\n",
+                page, col, (unsigned long long)off,
+                (!s->data || off >= s->size) ? "ABSENT" : "present",
+                ldl_le_p(s->page_buf + col));
+    }
+
     s->page_armed = 1;
 }
 
@@ -167,7 +176,8 @@ static bool nfc_is_read_cmd(mt7621NfcState *s)
     return s->cmd == NAND_CMD_READ0 || s->cmd == NAND_CMD_PAGE_READ;
 }
 
-#define NFC_TRACE_MAX 40
+#define NFC_TRACE_MAX 160
+#define NFC_PAGE_TRACE_MAX 16
 
 static void nfc_trace(mt7621NfcState *s, const char *rw, hwaddr addr,
                       uint64_t val, unsigned size)
@@ -183,7 +193,6 @@ static void nfc_trace(mt7621NfcState *s, const char *rw, hwaddr addr,
 
 static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
 {
-    nfc_trace(MT7621_NFC(opaque), "rd", addr, 0, size);
     mt7621NfcState *s = MT7621_NFC(opaque);
     uint32_t val = 0;
 
@@ -278,6 +287,12 @@ static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
     if (size == 2) {
         val &= 0xffff;
     }
+    /*
+     * Trace after the value is known: tracing before the switch logged every
+     * single read as 0x0, which made the status polls look like a deadlock
+     * when the device was answering normally.
+     */
+    nfc_trace(s, "rd", addr, val, size);
     return val;
 }
 
