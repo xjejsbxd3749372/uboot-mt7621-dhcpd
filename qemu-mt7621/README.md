@@ -111,6 +111,26 @@ image. `compose_flash.py` therefore overwrites `0x0..0x80000` wholesale with
 the build under test and copies everything from `0x80000` on verbatim, which
 keeps the real `u-boot-env`, `bdata` and `factory` calibration.
 
+## The stock dump release
+
+`compose_flash.py` needs a 128MiB `--dump`; without one it composes a flash
+whose partitions past `0x80000` are all `0xFF`, so `env`/`bdata`/`factory` are
+blank and L4 is unreachable. That dump now exists:
+
+    https://github.com/xjejsbxd3749372/uboot-mt7621-dhcpd/releases/tag/nand-dump
+
+| asset | what it is |
+|---|---|
+| `mi-router-4-full.bin` | the stock the compose script wants: Breed at `0x0`, MiWiFi-R4-2.26.175 / 2.26.145 kernels (Linux 3.10.14) at `0x200000` / `0x600000`, squashfs 4.0/XZ rootfs inside UBI from `0xa41000`. |
+| `mi-router-4-current.bin` | a later dump, now running third-party OpenWrt r11208 (Linux 4.14.195) with this project's U-Boot. Its kernel is **truncated** - 6142484B declared, 4194240B that fit in the 4MiB `kernel_stock` partition - so the LZMA stream ends at 81%. Kept as a record, not as a working stock. |
+
+Both are sanitised in place at identical length (serial number, MAC, SSIDs,
+admin password hash, `DEVICE_ID`, `CHANNEL_SECRET` and their copies inside the
+rootfs), with the CRC32 of the `0x80000` config block and of `bdata`
+recomputed and re-verified - both are stored little-endian. Equal-length edits
+inside the rootfs invalidate its node checksums, so the published files must
+not be flashed back to a device.
+
 ## QEMU 9.2 API traps hit on the way
 
 Every one of these cost a CI cycle before it was found:
@@ -190,7 +210,8 @@ nfc[8/40]: wr off=0x0c val=0x30c77fff NFI_ACCON
 |---|---|
 | L1 console output | **PASS** |
 | L2 SPL stage + NAND/DRAM init | **PASS** |
-| L3 main U-Boot banner | FAIL - one firmware assertion away |
+| L3 main U-Boot banner | **PASS** (run 36828431431) |
+| L4 Linux `Linux version` | FAIL - needs a stock image that actually boots |
 
 The chain that got there, each step found by instrumentation rather than guesswork:
 
@@ -285,17 +306,31 @@ Two follow-on faults in the same area:
   than `FSM_CUSTOM_DATA`, so a parked FSM froze the access width. The FSM now
   reads `FSM_IDLE`, matching the hardware behaviour the driver documents.
 
-### What blocks L3 now
+### How L3 was reached (the bad-block false positive)
 
-`__rom_cfg` sits at flash 0x80 (`MTK_SPL_ROM_CFG_OFFS` 0x40 inside the uImage
-header) and reads `magic=0x31323637 size=0x11a00 align=0x20000`.
-`get_mtk_image_search_start()` returns `__rom_cfg.size + sizeof(image_header)`
-and `get_mtk_image_search_sector_size()` returns `__rom_cfg.align`. The observed
-reads are `0x11a00, 0x31a00, 0x51a00` (the raw `size` grid) and then
-`0x20200, 0x40200, 0x60200` - the payload is at `0x20000`, and neither grid
-lands on it. The raw address bytes are now logged so the next step is to decide
-whether the compose offset or the search start is wrong; the geometry itself is
-verified, since `0x11a00` is exactly `__rom_cfg.size`.
+`__rom_cfg` sits at flash 0x80 and reads `magic=0x31323637 size=0x11a20
+align=0x20000`, so `get_mtk_image_search_start()` returns `size + 64 =
+0x11A60`, `ALIGN` to `0x20000`, and the payload is found at `0x20000`. The
+payload was always healthy: `ih_hcrc` recomputes to `0xb3e30a32` and `ih_dcrc`
+to `0xb0186cca`, both matching the header.
+
+What stopped it was `nfc_block_bad()`, which reads the bad-block marker at
+column `ecc.size + badblockpos = 512`. `mt7621_nand.c` documents two page
+layouts - raw `DAT0|FDM0|ECC0|...` and formatted `DAT0..3|FDM0..3|ECC0..3` -
+and the model only implemented formatted, so column 512 came back as *data*
+bytes (`0x19` at `0x20200`, `0xa8` at `0x11a00`, `0x67` at `0x40200`) instead
+of `0xFF`. Every block therefore looked bad and `nand_spl_load_image()` skipped
+`0x20000` entirely; the SPL only ever saw the `0xFF` that follows it. Twelve of
+the thirteen observed `page=` traces were those probes, which is also why the
+`0x11A00` address looked like a search start - it is `page*2048 + 512`, a
+synthesised value, not any offset the SPL computes. The `0x60` gap is
+`(0x11A60 & 0x7FF) - 0x200`.
+
+With the raw layout implemented, `nfc_block_bad()` sees `0xFFFFFFFF`, blocks
+probe good, and the copy runs page 64 through 150 with no gap - 174KiB against
+`ih_size` 176521B. `Clocks: CPU: 880MHz, DDR: 1200MHz, Bus: 220MHz,
+XTAL: 40MHz`, `DRAM: 128 MiB`, `NAND: 128 MiB` follow, all matching
+`--cpufreq 880 --ramfreq 1200`.
 
 ## What is not modelled, and why it is fine
 
