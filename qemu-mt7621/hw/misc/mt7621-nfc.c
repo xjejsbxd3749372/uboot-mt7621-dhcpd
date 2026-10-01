@@ -164,10 +164,13 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
     if (s->n_page_trace < NFC_PAGE_TRACE_MAX) {
         s->n_page_trace++;
         fprintf(stderr,
-                "nfc: load page=%u col=%u off=0x%llx %s word0=0x%08x\n",
-                page, col, (unsigned long long)off,
+                "nfc: load page=%u col=%u addr=0x%llx %s word0=0x%08x "
+                "raw=%u:%u:%u:%u:%u n=%d\n",
+                page, col, (unsigned long long)(off + col),
                 (!s->data || off >= s->size) ? "ABSENT" : "present",
-                ldl_le_p(s->page_buf + col));
+                ldl_le_p(s->page_buf + col),
+                s->addr_byte[0], s->addr_byte[1], s->addr_byte[2],
+                s->addr_byte[3], s->addr_byte[4], s->addr_n);
     }
 
     s->page_armed = 1;
