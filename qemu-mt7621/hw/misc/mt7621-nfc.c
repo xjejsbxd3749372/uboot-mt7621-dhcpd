@@ -126,6 +126,7 @@ static uint64_t nfc_page_offset(uint32_t page)
 #define NFC_TRACE_MAX      400
 #define NFC_PAGE_TRACE_MAX 16
 #define NFC_ADDR_TRACE_MAX 32
+#define NFC_ID_TRACE_MAX    8
 
 /* Load the addressed page into the PIO stream buffer. */
 /*
@@ -347,8 +348,14 @@ static void nfc_trace(mt7621NfcState *s, const char *rw, hwaddr addr,
 static void nfc_arm_pending(mt7621NfcState *s)
 {
     if (s->pending_data == NFC_DATA_ID) {
-        if (s->n_page_trace < NFC_PAGE_TRACE_MAX) {
-            s->n_page_trace++;
+        /*
+         * ID reads share no budget with page loads. They used to, so a boot with
+         * three nand_scan_ident() probes left only 13 of the page-read slots -
+         * exactly 16 - and a payload copy that ran for a hundred pages silently
+         * stopped being reported after page 71.
+         */
+        if (s->n_id_trace < NFC_ID_TRACE_MAX) {
+            s->n_id_trace++;
             fprintf(stderr, "nfc: read id %02x %02x %02x %02x\n",
                     nfc_id[0], nfc_id[1], nfc_id[2], nfc_id[3]);
         }
