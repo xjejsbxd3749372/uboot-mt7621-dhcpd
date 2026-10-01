@@ -91,6 +91,14 @@ static uint64_t nfc_page_offset(uint32_t page)
     return (uint64_t)page * MT7621_NFC_PAGE_SIZE;
 }
 
+/*
+ * Bounded access trace.  The SPL can sit in a silent NAND polling loop for the
+ * whole 90s window with nothing but these lines to explain where it is, so the
+ * budget is generous but hard-capped; a run can never flood the log again.
+ */
+#define NFC_TRACE_MAX      160
+#define NFC_PAGE_TRACE_MAX 16
+
 /* Load the addressed page into the PIO stream buffer. */
 static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
 {
@@ -176,8 +184,6 @@ static bool nfc_is_read_cmd(mt7621NfcState *s)
     return s->cmd == NAND_CMD_READ0 || s->cmd == NAND_CMD_PAGE_READ;
 }
 
-#define NFC_TRACE_MAX 160
-#define NFC_PAGE_TRACE_MAX 16
 
 static void nfc_trace(mt7621NfcState *s, const char *rw, hwaddr addr,
                       uint64_t val, unsigned size)
