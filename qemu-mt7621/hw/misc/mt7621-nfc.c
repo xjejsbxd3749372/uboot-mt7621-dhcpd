@@ -84,6 +84,9 @@
 #define NAND_CMD_PAGE_READ   0x13
 #define NAND_CMD_PROGRAM     0x02
 #define NAND_CMD_ERASE1      0x60
+#define NAND_CMD_ERASE2      0xd0
+#define NAND_CMD_SEQIN       0x80
+#define NAND_CMD_RNDOUT      0x05
 #define NAND_CMD_RNDOUTSTART 0xe0
 
 /* what the next data phase delivers */
@@ -177,28 +180,102 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
     s->page_armed = 1;
 }
 
-static uint32_t nfc_decode_page(mt7621NfcState *s)
+/*
+ * Split the latched address bytes into column and row.
+ *
+ * mtk_nfc_send_address() pushes every wire byte through NFI_COLADDR (ROWADDR
+ * is always written as 0, ADDRNOB.COL_NOB as 1), so the register file carries
+ * no col/row distinction: the model has to derive the shape from the command
+ * that opened the cycle plus the geometry.  s->cmd is that command, because
+ * only READSTART and RNDOUTSTART leave the address accumulator alone.
+ *
+ *   - nand_base.c nand_command_lp() is installed by nand_scan_ident() for
+ *     every chip with mtd->writesize > 512 (2KiB page here) and always
+ *     latches "column" then "column >> 8": two little-endian column bytes.
+ *     The SPL's own cmdfunc in mt7621_nand_spl.c drops the second column
+ *     byte for READID only.
+ *   - the row is 2 bytes on this part: nand_scan_ident() sets NAND_ROW_ADDR_3
+ *     only when chip_shift - page_shift > 16, and 128MiB / 2KiB is exactly
+ *     65536 pages (chip_shift 27 - page_shift 11 = 16), so nand_command_lp()
+ *     stops after page_addr >> 8.  Three row bytes are still tolerated for a
+ *     chip that does get NAND_ROW_ADDR_3.
+ *   - erase latches the row with no column at all, so its row sits at
+ *     addr_byte[0], not [2].
+ */
+static int nfc_col_nob(mt7621NfcState *s)
 {
-    /*
-     * The driver writes every address byte through NFI_COLADDR in wire order:
-     *   byte 0..1 = column, byte 2..4 = row (page) low byte first.
-     */
-    uint32_t page = 0;
+    int n;
 
-    for (int i = 2; i < s->addr_n && i < 5; i++) {
-        page |= (uint32_t)s->addr_byte[i] << (8 * (i - 2));
+    if (s->cmd == NAND_CMD_ERASE1 || s->cmd == NAND_CMD_ERASE2) {
+        return 0;
     }
-    return page;
+
+    n = 2;                          /* column, column >> 8 */
+    if (n > s->addr_n) {
+        n = s->addr_n;
+    }
+    if (n < 0) {
+        n = 0;
+    }
+    return n;
+}
+
+static int nfc_row_nob(mt7621NfcState *s)
+{
+    int n;
+
+    if (s->cmd == NAND_CMD_READID) {
+        return 0;                   /* an id cycle carries no row */
+    }
+
+    n = s->addr_n - nfc_col_nob(s);
+    if (n < 0) {
+        n = 0;
+    }
+    if (n > 3) {
+        n = 3;                      /* NAND_ROW_ADDR_3 caps the row at 3 */
+    }
+    return n;
 }
 
 static uint32_t nfc_decode_col(mt7621NfcState *s)
 {
     uint32_t col = 0;
+    int n = nfc_col_nob(s);
 
-    for (int i = 0; i < s->addr_n && i < 2; i++) {
+    for (int i = 0; i < n; i++) {
+        if (i >= (int)sizeof(s->addr_byte)) {
+            break;
+        }
         col |= (uint32_t)s->addr_byte[i] << (8 * i);
     }
     return col;
+}
+
+static uint32_t nfc_decode_page(mt7621NfcState *s)
+{
+    uint32_t page = 0;
+    int base = nfc_col_nob(s);
+    int n = nfc_row_nob(s);
+
+    /*
+     * No row on the wire (RNDOUT and friends only move the column): reuse the
+     * page the last complete cycle latched instead of decoding residue.
+     */
+    if (n == 0) {
+        return s->row_page;
+    }
+
+    for (int i = 0; i < n; i++) {
+        int idx = base + i;
+
+        if (idx < 0 || idx >= (int)sizeof(s->addr_byte)) {
+            break;
+        }
+        page |= (uint32_t)s->addr_byte[idx] << (8 * i);
+    }
+    s->row_page = page;
+    return page;
 }
 
 /* Length of the PIO byte stream for the armed page. */
@@ -419,6 +496,12 @@ static void nfc_nfi_write(void *opaque, hwaddr addr, uint64_t val64,
          */
         if (s->cmd != NAND_CMD_READSTART && s->cmd != NAND_CMD_RNDOUTSTART) {
             s->addr_n = 0;
+            /*
+             * Drop the old bytes as well as the count: addr_n alone would
+             * leave the previous cycle's bytes in place for any decoder that
+             * indexes past the bytes this cycle actually sent.
+             */
+            memset(s->addr_byte, 0, sizeof(s->addr_byte));
             s->in_addr_phase = 0;
         }
         s->page_armed = 0;
