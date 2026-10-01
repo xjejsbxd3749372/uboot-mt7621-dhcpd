@@ -481,6 +481,35 @@ static void mt7621_soc_init(Object *obj)
     object_property_add_child(obj, "nfc", OBJECT(s->nfc));
 }
 
+
+/*
+ * Quiet stand-in for physical ranges this SoC has but the model does not.
+ *
+ * Reads return 0 and writes are dropped. That is exactly what makes
+ * get_ram_size()'s pattern test fail and report the real 128MB, so the
+ * behaviour is right; what was wrong was using create_unimplemented_device(),
+ * which logs every single access. get_ram_size() probes these windows several
+ * times and the messages came out interleaved between the "DRAM:" and "NAND:"
+ * lines of the main U-Boot banner, burying the sizes the banner was printing.
+ */
+static uint64_t mt7621_hole_read(void *opaque, hwaddr addr, unsigned size)
+{
+    return 0;
+}
+
+static void mt7621_hole_write(void *opaque, hwaddr addr, uint64_t val,
+                              unsigned size)
+{
+}
+
+static const MemoryRegionOps mt7621_hole_ops = {
+    .read = mt7621_hole_read,
+    .write = mt7621_hole_write,
+};
+
+static MemoryRegion mt7621_dram_hole;
+static MemoryRegion mt7621_apu_hole;
+
 static void mt7621_soc_realize(DeviceState *dev, Error **errp)
 {
     MT7621SoCState *s = MT7621_SOC(dev);
@@ -578,34 +607,6 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
      * them where it overlaps (memory_region_add_subregion_overlap resolves
      * "higher priority hides lower priority").
      */
-/*
- * Quiet stand-in for physical ranges this SoC has but the model does not.
- *
- * Reads return 0 and writes are dropped. That is exactly what makes
- * get_ram_size()'s pattern test fail and report the real 128MB, so the
- * behaviour is right; what was wrong was using create_unimplemented_device(),
- * which logs every single access. get_ram_size() probes these windows several
- * times and the messages came out interleaved between the "DRAM:" and "NAND:"
- * lines of the main U-Boot banner, burying the sizes the banner was printing.
- */
-static uint64_t mt7621_hole_read(void *opaque, hwaddr addr, unsigned size)
-{
-    return 0;
-}
-
-static void mt7621_hole_write(void *opaque, hwaddr addr, uint64_t val,
-                              unsigned size)
-{
-}
-
-static const MemoryRegionOps mt7621_hole_ops = {
-    .read = mt7621_hole_read,
-    .write = mt7621_hole_write,
-};
-
-static MemoryRegion mt7621_dram_hole;
-static MemoryRegion mt7621_apu_hole;
-
     memory_region_init_io(&s->dramc_stub, OBJECT(s),
                           &mt7621_dramc_stub_ops, s, "mt7621-dramc-stub", 8);
     memory_region_add_subregion_overlap(get_system_memory(), 0x1e108800,
