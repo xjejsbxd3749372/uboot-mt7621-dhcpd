@@ -123,9 +123,15 @@ static uint64_t nfc_page_offset(uint32_t page)
  * whole 90s window with nothing but these lines to explain where it is, so the
  * budget is generous but hard-capped; a run can never flood the log again.
  */
-#define NFC_TRACE_MAX      400
-#define NFC_PAGE_TRACE_MAX 16
-#define NFC_ADDR_TRACE_MAX 32
+/*
+ * Sized to cover a whole boot. A 176KB payload is 87 pages, so a page budget of
+ * 16 stopped reporting right in the middle of the copy and looked like the copy
+ * had stalled; 400 register lines filled up the same way. Both are just text on
+ * the serial log, and the log is already hundreds of kilobytes.
+ */
+#define NFC_TRACE_MAX      4000
+#define NFC_PAGE_TRACE_MAX 512
+#define NFC_ADDR_TRACE_MAX 64
 #define NFC_ID_TRACE_MAX    8
 
 /* Load the addressed page into the PIO stream buffer. */
