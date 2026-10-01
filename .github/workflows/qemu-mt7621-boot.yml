@@ -68,17 +68,24 @@ jobs:
           # is booted afterwards as a comparison, because if it reaches a
           # banner while the real chain does not, the problem is in the SPL
           # stage rather than in U-Boot itself.
-          gh api repos/${{ github.repository }}/releases/latest \
-            --jq '.assets[] | select(.name|test("^u-boot-mt7621_Xiaomi_Mi_Router_4_.*\\.bin$"))
-                  | .browser_download_url' | head -1 > flash.url
-          gh api repos/${{ github.repository }}/releases/latest \
-            --jq '.assets[] | select(.name|test("^u-boot_Xiaomi_Mi_Router_4_.*\\.img$"))
-                  | .browser_download_url' | head -1 > main.url
+          # releases/latest is only "whichever release was published most
+          # recently", so a release with no U-Boot asset - the nand-dump stock
+          # release, or another board's build - breaks it with "got 0". Walk
+          # every release instead: the API returns them newest first, so the
+          # first asset matching this board's name is the newest build for it,
+          # and a release that does not carry that asset simply contributes
+          # nothing. Still pinned to this board so another model's binary can
+          # never be booted, and .[0] means a wrong count cannot be hidden.
+          gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq '[.[].assets[]
+                   | select(.name|test("^u-boot-mt7621_Xiaomi_Mi_Router_4_.*\\.bin$"))
+                   | .browser_download_url] | .[0] // empty' > flash.url
+          gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq '[.[].assets[]
+                   | select(.name|test("^u-boot_Xiaomi_Mi_Router_4_.*\\.img$"))
+                   | .browser_download_url] | .[0] // empty' > main.url
 
-                  # Pinned to this board: build.yml/custom.yml publish one release per model
-                  # and releases/latest is just the newest, so an unanchored pattern would
-                  # happily boot another board's binary. head -1 also hides a wrong count.
-                  [ "$(wc -l < flash.url)" -eq 1 ] || { echo "::error::expected exactly one flash asset, got $(wc -l < flash.url)"; exit 1; }
+          [ "$(wc -l < flash.url)" -eq 1 ] || { echo "::error::expected exactly one flash asset, got $(wc -l < flash.url)"; exit 1; }
 
           [ -s flash.url ] || { echo "::error::no u-boot-mt7621_*.bin asset"; exit 1; }
           [ -s main.url ] || echo "::warning::no u-boot_*.img asset, skipping the comparison boot"
