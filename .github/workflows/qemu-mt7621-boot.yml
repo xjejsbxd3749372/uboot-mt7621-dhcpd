@@ -69,11 +69,16 @@ jobs:
           # banner while the real chain does not, the problem is in the SPL
           # stage rather than in U-Boot itself.
           gh api repos/${{ github.repository }}/releases/latest \
-            --jq '.assets[] | select(.name|test("^u-boot-mt7621_.*\\.bin$"))
+            --jq '.assets[] | select(.name|test("^u-boot-mt7621_Xiaomi_Mi_Router_4_.*\\.bin$"))
                   | .browser_download_url' | head -1 > flash.url
           gh api repos/${{ github.repository }}/releases/latest \
-            --jq '.assets[] | select(.name|test("^u-boot_.*\\.img$"))
+            --jq '.assets[] | select(.name|test("^u-boot_Xiaomi_Mi_Router_4_.*\\.img$"))
                   | .browser_download_url' | head -1 > main.url
+
+                  # Pinned to this board: build.yml/custom.yml publish one release per model
+                  # and releases/latest is just the newest, so an unanchored pattern would
+                  # happily boot another board's binary. head -1 also hides a wrong count.
+                  [ "$(wc -l < flash.url)" -eq 1 ] || { echo "::error::expected exactly one flash asset, got $(wc -l < flash.url)"; exit 1; }
 
           [ -s flash.url ] || { echo "::error::no u-boot-mt7621_*.bin asset"; exit 1; }
           [ -s main.url ] || echo "::warning::no u-boot_*.img asset, skipping the comparison boot"
@@ -91,9 +96,13 @@ jobs:
           python3 qemu-mt7621/scripts/compose_flash.py \
             -o flash.bin --uboot u-boot-flash.bin --dump full.bin
           sha256sum flash.bin
+          # Informational only. It shares this step with the primary compose, so a
+          # non-zero exit here would kill the step under `set -euo pipefail` and skip
+          # the real test entirely.
           if [ -f u-boot-main.img ]; then
             python3 qemu-mt7621/scripts/compose_flash.py \
-              -o flash-main.bin --uboot u-boot-main.img --dump full.bin
+              -o flash-main.bin --uboot u-boot-main.img --dump full.bin \
+            || echo "::warning::comparison image not composable, comparison boot will be skipped"
           fi
 
       - name: run and grade the simulated boot (SPL + payload)
