@@ -93,6 +93,9 @@ grep -aE "Clocks:|DRAM:|NAND:|CPU:|Model:|Net:|U-Boot( SPL)? 20[0-9]{2}\\." "$LO
 # one run and 2 in another were both just how many fell inside the window.
 echo "-------------------- model activity -------------"
 echo "  nfc page loads  : $(grep -ac 'nfc: load' "$LOG")"
+# Which pages, so a reader can see how far a payload copy actually got.
+echo "  load pages      : $(grep -a 'nfc: load' "$LOG" \
+    | sed -n 's/.*load \(page=[0-9]* col=[0-9]*\).*/\1/p' | tr '\n' ' ')"
 echo "  nfc id reads    : $(grep -ac 'nfc: read id' "$LOG")"
 echo "  unimp accesses  : $(grep -ac 'unimplemented device' "$LOG")"
 echo "  register trace  : $(grep -ac '^nfc' "$LOG") lines"
