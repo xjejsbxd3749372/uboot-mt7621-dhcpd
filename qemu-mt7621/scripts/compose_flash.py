@@ -29,6 +29,8 @@ import os
 import sys
 
 NAND_SIZE = 128 * 1024 * 1024
+PAYLOAD_OFF = 0x20000       # where the SPL payload uImage sits
+IH_MAGIC = b"\x27\x05\x19\x56"
 BOOT_SIZE = 0x80000          # bootloader partition
 STOCK_FROM = 0x80000         # everything past the bootloader
 
@@ -49,6 +51,16 @@ def main():
         sys.exit(f"error: {args.uboot} is {len(uboot)}B, larger than the "
                  f"{BOOT_SIZE}B bootloader partition")
 
+    # The SPL finds the payload with a grid derived from __rom_cfg, and the
+    # layout that ships puts it at PAYLOAD_OFF. An SPL-only image composes
+    # perfectly well and then fails much later as an unrelated
+    # "Failed to load U-Boot image!", so reject it here where the message can
+    # name the actual problem.
+    if len(uboot) < PAYLOAD_OFF + 64 or uboot[PAYLOAD_OFF:PAYLOAD_OFF + 4] != IH_MAGIC:
+        sys.exit(f"error: {args.uboot} has no payload uImage at 0x{PAYLOAD_OFF:x} "
+                 f"(file is {len(uboot)}B); expected the two-stage flash image "
+                 f"u-boot-mt7621_*.bin, not a u-boot_*.img")
+
     stock = open(args.dump, "rb").read()
     if len(stock) != NAND_SIZE:
         sys.exit(f"error: {args.dump} is {len(stock)}B, expected {NAND_SIZE}B")
@@ -57,6 +69,15 @@ def main():
         out.write(uboot)
         out.write(b"\xff" * (STOCK_FROM - len(uboot)))
         out.write(stock[STOCK_FROM:])
+
+    # The stock dump comes from a release asset that may not exist. When it is
+    # missing the workflow synthesises an all-erased device, which is fine for
+    # the boot test but not the flash the docstring describes - so say so.
+    if set(stock[STOCK_FROM:STOCK_FROM + 0x10000]) == {0xff}:
+        print(f"  WARNING: everything at/after 0x{STOCK_FROM:x} in "
+              f"{os.path.basename(args.dump)} is erased - u-boot-env, bdata and "
+              f"the factory calibration are blank (stock dump release asset "
+              f"'mi-router-4-full.bin' is missing)")
 
     print(f"composed {args.output} ({os.path.getsize(args.output)}B)")
     print(f"  bootloader 0x0        : {len(uboot)}B (build under test)")
