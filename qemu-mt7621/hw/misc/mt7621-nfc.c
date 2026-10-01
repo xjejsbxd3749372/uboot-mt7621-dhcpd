@@ -71,14 +71,38 @@
 #define ECC_DECDONE_REG16   0x118
 #define ECC_FDMADDR_REG32   0x13c
 
-/* NAND commands (U-Boot nand.h) */
+/*
+ * NAND commands, as include/linux/mtd/rawnand.h defines them in this tree.
+ * READSTART used to be written as 0x0f here, which never matches anything the
+ * driver sends: rawnand.h says 0x30, and it is the command that closes the
+ * address cycle of a large-page read.
+ */
 #define NAND_CMD_READ0       0x00
-#define NAND_CMD_READSTART   0x0f
+#define NAND_CMD_READSTART   0x30
 #define NAND_CMD_RESET       0xff
 #define NAND_CMD_READID      0x90
 #define NAND_CMD_PAGE_READ   0x13
 #define NAND_CMD_PROGRAM     0x02
 #define NAND_CMD_ERASE1      0x60
+#define NAND_CMD_RNDOUTSTART 0xe0
+
+/* what the next data phase delivers */
+#define NFC_DATA_NONE        0
+#define NFC_DATA_PAGE        1
+#define NFC_DATA_ID          2
+
+/*
+ * The id[] the driver looks up during nand_scan_ident(). W29N01HVSINA 1G is
+ * the entry in drivers/mtd/nand/nand_ids.c whose geometry is exactly what
+ * this model implements: SZ_2K page, SZ_128 (128MiB) chip, SZ_128K erase
+ * block, 64-byte OOB and NAND_ECC_INFO(4, SZ_512), matching
+ * MT7621_NFC_PAGE_SIZE / BLOCK_SIZE / OOB_SIZE / ECC_STEPS one for one. An
+ * id the table does not know makes nand_scan_ident() fail, nfc_probe() bail
+ * out before nand_register(), and the SPL never sees a NAND device at all.
+ */
+static const uint8_t nfc_id[8] = {
+    0xef, 0xf1, 0x00, 0x95, 0x00, 0x00, 0x00, 0x00
+};
 
 static uint64_t nfc_page_offset(uint32_t page)
 {
@@ -179,11 +203,6 @@ static uint32_t nfc_stream_len(mt7621NfcState *s)
     return s->page_fmt ? MT7621_NFC_PAGE_SIZE : MT7621_NFC_PAGESIZE_TOTAL;
 }
 
-static bool nfc_is_read_cmd(mt7621NfcState *s)
-{
-    return s->cmd == NAND_CMD_READ0 || s->cmd == NAND_CMD_PAGE_READ;
-}
-
 
 static void nfc_trace(mt7621NfcState *s, const char *rw, hwaddr addr,
                       uint64_t val, unsigned size)
@@ -195,6 +214,29 @@ static void nfc_trace(mt7621NfcState *s, const char *rw, hwaddr addr,
     fprintf(stderr, "nfc[%llu/%d]: %s off=0x%02x size=%u val=0x%" PRIx64 "\n",
             (unsigned long long)s->n_trace, NFC_TRACE_MAX, rw,
             (unsigned)addr, size, val);
+}
+
+/*
+ * Materialise the bytes the next data phase must hand out. Called from the
+ * first NFI_DATAR read rather than from the command decoder, because the
+ * address cycle has not happened yet when the command arrives.
+ */
+static void nfc_arm_pending(mt7621NfcState *s)
+{
+    if (s->pending_data == NFC_DATA_ID) {
+        if (s->n_page_trace < NFC_PAGE_TRACE_MAX) {
+            s->n_page_trace++;
+            fprintf(stderr, "nfc: read id %02x %02x %02x %02x\n",
+                    nfc_id[0], nfc_id[1], nfc_id[2], nfc_id[3]);
+        }
+        memset(s->page_buf, 0xff, sizeof(s->page_buf));
+        memcpy(s->page_buf, nfc_id, sizeof(nfc_id));
+        s->stream_pos = 0;
+        s->page_fmt = 1;            /* id only, no OOB on the stream */
+        s->page_armed = 1;
+        return;
+    }
+    nfc_load_page(s, nfc_decode_page(s), nfc_decode_col(s));
 }
 
 static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
@@ -225,8 +267,13 @@ static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
         val = s->rowaddr;
         break;
     case NFI_DATAR_REG32: {
-        uint32_t len = nfc_stream_len(s);
+        uint32_t len;
 
+        if (!s->page_armed && s->pending_data != NFC_DATA_NONE) {
+            nfc_arm_pending(s);
+            s->pending_data = NFC_DATA_NONE;
+        }
+        len = nfc_stream_len(s);
         if (s->page_armed && s->stream_pos + 4 <= len) {
             val = ldl_le_p(s->page_buf + s->stream_pos);
             s->stream_pos += 4;
@@ -347,13 +394,25 @@ static void nfc_nfi_write(void *opaque, hwaddr addr, uint64_t val64,
     case NFI_CMD_REG16:
         s->cmd = val & 0xff;
         s->n_cmds++;
-        s->addr_n = 0;
-        s->in_addr_phase = 0;
-        if (s->cmd == NAND_CMD_READSTART && nfc_is_read_cmd(s)) {
-            nfc_load_page(s, nfc_decode_page(s), nfc_decode_col(s));
-        } else if (s->cmd == NAND_CMD_RESET) {
-            s->page_armed = 0;
-            s->stream_pos = 0;
+        /*
+         * A large-page read sends READ0, then the five address bytes, then
+         * READSTART to close the cycle. Resetting the address accumulator on
+         * the closing command would throw the page number away, so only the
+         * commands that begin a transaction clear it.
+         */
+        if (s->cmd != NAND_CMD_READSTART && s->cmd != NAND_CMD_RNDOUTSTART) {
+            s->addr_n = 0;
+            s->in_addr_phase = 0;
+        }
+        s->page_armed = 0;
+        s->stream_pos = 0;
+        if (s->cmd == NAND_CMD_READID) {
+            s->pending_data = NFC_DATA_ID;
+        } else if (s->cmd == NAND_CMD_READ0 || s->cmd == NAND_CMD_PAGE_READ ||
+                   s->cmd == NAND_CMD_READSTART) {
+            s->pending_data = NFC_DATA_PAGE;
+        } else {
+            s->pending_data = NFC_DATA_NONE;
         }
         break;
     case NFI_ADDRNOB_REG16:
