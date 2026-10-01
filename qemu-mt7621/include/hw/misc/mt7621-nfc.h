@@ -68,7 +68,15 @@ struct mt7621NfcState {
     uint32_t row_page;      /* last complete row (page) address latched on the wire */
 
     /* page being read into the PIO stream */
-    uint8_t page_buf[MT7621_NFC_PAGESIZE_TOTAL];
+    uint8_t page_buf[MT7621_NFC_PAGESIZE_TOTAL];   /* data[2048] | oob[64] */
+    /*
+     * What NFI_DATAR actually serves. The driver documents two layouts
+     * (mt7621_nand.c): raw  DAT0|FDM0|ECC0|DAT1|FDM1|ECC1|... and formatted
+     * DAT0..DAT3|FDM0..FDM3|ECC0..ECC3; NFI_CNFG.AUTO_FMT_EN picks between
+     * them. page_buf always holds the plain data|oob form because the FDM
+     * registers and the trace read it from there.
+     */
+    uint8_t stream_buf[MT7621_NFC_PAGESIZE_TOTAL];
     uint32_t stream_pos;    /* byte offset into page_buf served by NFI_DATAR */
     int page_armed;         /* READ0+address+READSTART done, data available */
     int page_fmt;           /* AUTO_FMT_EN: only 2048B data on the PIO stream */
