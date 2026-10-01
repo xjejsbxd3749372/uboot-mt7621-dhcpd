@@ -84,6 +84,15 @@ typedef struct MT7621Scratch {
      */
     hwaddr const_reg;
     uint32_t const_val;
+    /*
+     * (offset, value) pairs this window answers with while the guest has not
+     * stored anything there - the rest of the hardware state the firmware
+     * reads but never drives. const_reg covers the single most important
+     * register (CUR_CLK_STS); this table covers the PLL and clock-select
+     * registers, where more than one value has to come from the model.
+     */
+    const uint32_t *reg_defaults;
+    unsigned n_reg_defaults;
 } MT7621Scratch;
 
 /*
@@ -94,6 +103,49 @@ typedef struct MT7621Scratch {
  * of which region wins never arises.
  */
 #define MT7621_N_SCRATCH 8
+/*
+ * Clock and PLL state that arch/mips/mach-mt7621/clocks.c reads but nothing on
+ * this board writes. Without them the placeholder returns 0 and the banner
+ * prints "Clocks: CPU: 20MHz, DDR: 0MHz": mt7621_get_clocks() falls through to
+ * `cpu_clk = xtal_clk` and computes ddr_clk from an FBDIV of zero.
+ *
+ * The values reproduce what the board is built for (--cpufreq 880,
+ * --ramfreq 1200):
+ *
+ *   SYSCFG0.XTAL_MODE_SEL = 4  -> xtal_clk = 40MHz
+ *   CLKCFG0.CPU_CLK_SEL   = 1  -> cpu_clk from the memory PLL
+ *   MEMPLL18.FBDIV = 21        -> (21 + 1) * 40MHz = 880MHz
+ *   MEMPLL6.FBDIV  = 30        -> 30 * 40MHz      = 1200MHz
+ *   MEMPLL1.DIV2_SEL = 1       -> no second doubling
+ *   CUR_CPU_FDIV/FFRAC = 1/1   -> ratio of one, so 880/1200 survive
+ *
+ * bus_clk is derived as cpu_clk / 4 = 220MHz.
+ */
+static const uint32_t mt7621_sysc_defaults[] = {
+    0x10, 0x00000100,      /* SYSCFG0:  XTAL_MODE_SEL = 4 */
+    0x2c, 0x40000000,      /* CLKCFG0:  CPU_CLK_SEL   = 1 */
+};
+
+static const uint32_t mt7621_dramc_defaults[] = {
+    0x604, 0x00000002,     /* MEMPLL1:  RG_MEPL_DIV2_SEL = 1 */
+    0x618, 0x000001e0,     /* MEMPLL6:  RG_MEPL_FBDIV = 30 -> 1200MHz */
+    0x648, 0x00000150,     /* MEMPLL18: RG_MEPL_FBDIV = 21 -> 880MHz  */
+};
+
+#define MT7621_DEFPAIRS(a) ((unsigned)(sizeof(a) / sizeof(a[0]) / 2))
+
+/* indexed like mt7621_scratch_map */
+static const uint32_t *const mt7621_scratch_defaults[MT7621_N_SCRATCH] = {
+    mt7621_sysc_defaults, NULL, NULL, NULL, NULL,
+    mt7621_dramc_defaults, NULL, NULL,
+};
+
+static const unsigned mt7621_scratch_defaults_n[MT7621_N_SCRATCH] = {
+    MT7621_DEFPAIRS(mt7621_sysc_defaults), 0, 0, 0, 0,
+    MT7621_DEFPAIRS(mt7621_dramc_defaults), 0, 0,
+};
+
+
 static const struct {
     hwaddr addr;
     hwaddr size;
@@ -310,15 +362,35 @@ static uint32_t stored_word(MT7621Scratch *sc, hwaddr addr)
     return w;
 }
 
+static bool mt7621_lookup_default(MT7621Scratch *sc, hwaddr addr, uint32_t *out)
+{
+    for (unsigned i = 0; i < sc->n_reg_defaults; i++) {
+        if (sc->reg_defaults[2 * i] == addr) {
+            *out = sc->reg_defaults[2 * i + 1];
+            return true;
+        }
+    }
+    return false;
+}
+
 static uint64_t mt7621_scratch_read(void *opaque, hwaddr addr, unsigned size)
 {
     MT7621Scratch *sc = opaque;
     uint64_t v = 0;
     unsigned i;
 
+    uint32_t defval = 0;
+
     mt7621_scratch_touch(sc, addr);
     if (sc->mirror_dst && addr == sc->mirror_dst) {
         addr = sc->mirror_src;
+    } else if (sc->n_reg_defaults && !stored_word(sc, addr) &&
+               mt7621_lookup_default(sc, addr, &defval)) {
+        /* hardware state nobody writes: PLL / clock-select registers */
+        for (i = 0; i < size; i++) {
+            v |= (uint64_t)((defval >> (8 * i)) & 0xff) << (8 * i);
+        }
+        return v;
     } else if (sc->const_reg && addr == sc->const_reg && !stored_word(sc, addr)) {
         /* hardware status the firmware reads but nothing writes */
         for (i = 0; i < size; i++) {
@@ -648,6 +720,8 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
         s->scratch[i].mirror_dst = mt7621_scratch_map[i].mirror_dst;
         s->scratch[i].const_reg = mt7621_scratch_map[i].const_reg;
         s->scratch[i].const_val = mt7621_scratch_map[i].const_val;
+        s->scratch[i].reg_defaults = mt7621_scratch_defaults[i];
+        s->scratch[i].n_reg_defaults = mt7621_scratch_defaults_n[i];
         s->scratch[i].buf = g_malloc0(s->scratch[i].size);
         memory_region_init_io(&s->scratch_mr[i], OBJECT(s),
                               &mt7621_scratch_ops, &s->scratch[i],
