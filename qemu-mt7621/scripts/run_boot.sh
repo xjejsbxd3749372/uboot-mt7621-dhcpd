@@ -8,8 +8,10 @@
 #
 # Grades against what a real boot produces:
 #   L1  any bootloader output on the console
-#   L2  SPL stage text (DRAM / NAND init)
-#   L3  the main U-Boot banner reached
+#   L2  SPL stage text specifically (the SPL banner, "loaded SPL", or the
+#       boot-mode line) - not generic DRAM/NAND words, which the main
+#       U-Boot banner also prints
+#   L3  the main U-Boot banner reached, graded on its own
 #   L4  a Linux boot message (kernel handed control)
 #
 # Exits non-zero when the grade is below min_level (default 3), so a boot that
@@ -21,6 +23,12 @@ FLASH="${2:?composed flash image}"
 SECS="${3:-90}"
 LOG="${4:-boot.log}"
 MIN_LEVEL="${5:-3}"
+
+# `[ "$level" -lt "$MIN_LEVEL" ]` on a non-numeric value prints
+# "integer expression expected", evaluates false, and the script reports PASS.
+case "$MIN_LEVEL" in
+    ''|*[!0-9]*) echo "ERROR: min_level must be a number, got '$MIN_LEVEL'" >&2; exit 2 ;;
+esac
 
 if [ "$SECS" != "0" ]; then
     echo "== simulated boot =="
@@ -85,6 +93,7 @@ echo "==================================================="
     echo
 } > "$LOG.extract"
 
+
 # ---------------------------------------------------------------- grade phase
 level=0
 
@@ -98,23 +107,25 @@ else
 fi
 
 if [ "$level" -ge 1 ]; then
-    if grep -qE "DRAM|dram|NAND:|nand:|Uncompress|SPL" "$LOG"; then
+    # SPL-specific words only. "DRAM" and "NAND:" also appear in the main
+    # U-Boot banner, so grepping them let a direct-boot u-boot_*.img pass L2.
+    if grep -qE "U-Boot SPL|loaded SPL|Trying to boot from" "$LOG"; then
         level=2
-        echo "PASS L2: SPL stage ran (DRAM/NAND/init text present)"
+        echo "PASS L2: SPL stage ran (SPL banner / boot-mode text present)"
     else
-        echo "FAIL L2: no SPL-stage text"
+        echo "FAIL L2: no SPL-specific text (generic DRAM/NAND words are not enough)"
     fi
 fi
 
-if [ "$level" -ge 2 ]; then
-    if grep -qE "U-Boot 20[0-9]{2}\." "$LOG"; then
-        level=3
-        echo "PASS L3: main U-Boot banner reached"
-    else
-        echo "FAIL L3: SPL ran but the main U-Boot banner never appeared"
-        echo "      last 20 log lines:"
-        tail -20 "$LOG" | sed 's/^/      /'
-    fi
+# Graded on its own: gating this behind L2 meant a log whose only flaw was a
+# silent SPL never got the banner test at all.
+if grep -qE "U-Boot 20[0-9]{2}\." "$LOG"; then
+    level=3
+    echo "PASS L3: main U-Boot banner reached"
+else
+    echo "FAIL L3: the main U-Boot banner never appeared"
+    echo "      last 20 log lines:"
+    tail -20 "$LOG" | sed 's/^/      /'
 fi
 
 if [ "$level" -ge 3 ] && grep -qE "Linux version|Booting Linux|Starting kernel" "$LOG"; then
@@ -125,10 +136,15 @@ else
 fi
 
 # ---------------------------------------------------------------- diagnostics
-if grep -qE "Unsupported|access to addr|LOG_GUEST_ERROR|no flash image|qemu: fatal" "$LOG"; then
+# Guard and printer share one pattern, and it matches what QEMU 9.2 prints:
+# physmem.c says "Invalid access to non-RAM device at addr", -d unimp prefixes
+# lines with "unimp:", and LOG_GUEST_ERROR is a log-mask name that never
+# reaches stderr. With the old pair the guard could fire and the printer then
+# print nothing, dropping the diagnostics this block exists for.
+GUEST_ERR='unimp:|Invalid access to non-RAM device at addr|Unsupported|no flash image|qemu: fatal'
+if grep -qE "$GUEST_ERR" "$LOG"; then
     echo "-- guest errors / fatal (first 15):"
-    grep -E "Unsupported|access to addr|no flash image|qemu: fatal" "$LOG" \
-        | head -15 | sed 's/^/   /'
+    grep -E "$GUEST_ERR" "$LOG" | head -15 | sed 's/^/   /'
 fi
 
 echo
@@ -145,3 +161,4 @@ if [ "$level" -lt "$MIN_LEVEL" ]; then
     exit 1
 fi
 echo "RESULT: PASS (level $level >= $MIN_LEVEL)"
+
