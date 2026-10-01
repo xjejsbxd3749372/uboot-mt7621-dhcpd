@@ -128,6 +128,44 @@ static uint64_t nfc_page_offset(uint32_t page)
 #define NFC_ADDR_TRACE_MAX 32
 
 /* Load the addressed page into the PIO stream buffer. */
+/*
+ * Lay the latched page out for the PIO port.
+ *
+ * NFI_CNFG.AUTO_FMT_EN selects between the two layouts mt7621_nand.c
+ * documents. nfc_cmd_ctrl() rewrites CNFG with OP_CUSTOM before every command,
+ * which clears it, so everything the SPL does before a full page read - and
+ * nfc_block_bad() in particular - runs raw.
+ *
+ * nfc_block_bad() reads column chip->ecc.size + chip->badblockpos (512 + 0) and
+ * treats the byte as the bad-block marker. In the raw layout column 512 is
+ * FDM0[0], which for a good block is 0xff. Serving page data there instead made
+ * blocks 1 and 2 look bad, so nand_spl_load_image() skipped 0x20000 - where the
+ * payload lives - and the SPL only ever saw the 0xff filler that follows it.
+ */
+static void nfc_build_stream(mt7621NfcState *s)
+{
+    memset(s->stream_buf, 0xff, sizeof(s->stream_buf));
+
+    if (s->page_fmt) {
+        /* formatted: data only; FDM and ECC go out over the FDM registers */
+        memcpy(s->stream_buf, s->page_buf, MT7621_NFC_PAGE_SIZE);
+        return;
+    }
+
+    for (int i = 0; i < MT7621_NFC_ECC_STEPS; i++) {
+        const int dsz = MT7621_NFC_PAGE_SIZE / MT7621_NFC_ECC_STEPS;   /* 512 */
+        uint8_t *sec = s->stream_buf + i * (MT7621_NFC_SPARE_PER_SEC + dsz);
+
+        memcpy(sec, s->page_buf + i * dsz, dsz);
+        memcpy(sec + dsz,
+               s->page_buf + MT7621_NFC_PAGE_SIZE + i * MT7621_NFC_FDM_SIZE,
+               MT7621_NFC_FDM_SIZE);
+        /* No parity is generated: the dump is a good image, so erased bytes. */
+        memset(sec + dsz + MT7621_NFC_FDM_SIZE, 0xff,
+               MT7621_NFC_SPARE_PER_SEC - MT7621_NFC_FDM_SIZE);
+    }
+}
+
 static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
 {
     uint64_t off;
@@ -141,6 +179,7 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
     s->n_page_reads++;
 
     if (!s->data || col >= MT7621_NFC_PAGE_SIZE) {
+        nfc_build_stream(s);
         s->page_armed = 1;
         return;
     }
@@ -151,6 +190,7 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
      */
     off = nfc_page_offset(page);
     if (off >= s->size) {
+        nfc_build_stream(s);
         s->page_armed = 1;
         return;
     }
@@ -165,6 +205,8 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
         s->fdmm[i] = ldl_le_p(fdm + 4);
     }
 
+    nfc_build_stream(s);
+
     if (s->n_page_trace < NFC_PAGE_TRACE_MAX) {
         s->n_page_trace++;
         fprintf(stderr,
@@ -172,7 +214,7 @@ static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
                 "raw=%u:%u:%u:%u:%u n=%d\n",
                 page, col, (unsigned long long)(off + col),
                 (!s->data || off >= s->size) ? "ABSENT" : "present",
-                ldl_le_p(s->page_buf + col),
+                ldl_le_p(s->stream_buf + col),
                 s->addr_byte[0], s->addr_byte[1], s->addr_byte[2],
                 s->addr_byte[3], s->addr_byte[4], s->addr_n);
     }
@@ -314,6 +356,7 @@ static void nfc_arm_pending(mt7621NfcState *s)
         memcpy(s->page_buf, nfc_id, sizeof(nfc_id));
         s->stream_pos = 0;
         s->page_fmt = 1;            /* id only, no OOB on the stream */
+        nfc_build_stream(s);
         s->page_armed = 1;
         return;
     }
@@ -367,9 +410,9 @@ static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
         step = (s->cnfg & (1u << BYTE_RW_S)) ? 1 : 4;
         if (s->page_armed && s->stream_pos + step <= len) {
             if (step == 4) {
-                val = ldl_le_p(s->page_buf + s->stream_pos);
+                val = ldl_le_p(s->stream_buf + s->stream_pos);
             } else {
-                val = s->page_buf[s->stream_pos];
+                val = s->stream_buf[s->stream_pos];
             }
             s->stream_pos += step;
         } else {
@@ -550,7 +593,7 @@ static void nfc_nfi_write(void *opaque, hwaddr addr, uint64_t val64,
          * backing dump is never modified by a simulated boot.
          */
         if (s->page_armed && s->stream_pos + 4 <= sizeof(s->page_buf)) {
-            stl_le_p(s->page_buf + s->stream_pos, val);
+            stl_le_p(s->stream_buf + s->stream_pos, val);
             s->stream_pos += 4;
         }
         break;
