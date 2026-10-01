@@ -268,15 +268,29 @@ static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NFI_DATAR_REG32: {
         uint32_t len;
+        unsigned step;
 
         if (!s->page_armed && s->pending_data != NFC_DATA_NONE) {
             nfc_arm_pending(s);
             s->pending_data = NFC_DATA_NONE;
         }
         len = nfc_stream_len(s);
-        if (s->page_armed && s->stream_pos + 4 <= len) {
-            val = ldl_le_p(s->page_buf + s->stream_pos);
-            s->stream_pos += 4;
+        /*
+         * CNFG.BYTE_RW selects a one-byte port, not a four-byte one.  The
+         * probe sets it before nand_scan_ident(), which then asks for the ID
+         * one byte at a time; stepping four bytes per access skipped every
+         * other byte and made the id lookup fail.  NFI_DATAR is a 32-bit
+         * register either way, so the byte is returned zero-extended, which
+         * is what nfc_read_byte() masks off with "& 0xff".
+         */
+        step = (s->cnfg & (1u << BYTE_RW_S)) ? 1 : 4;
+        if (s->page_armed && s->stream_pos + step <= len) {
+            if (step == 4) {
+                val = ldl_le_p(s->page_buf + s->stream_pos);
+            } else {
+                val = s->page_buf[s->stream_pos];
+            }
+            s->stream_pos += step;
         } else {
             val = 0xffffffff;
         }
@@ -287,17 +301,26 @@ static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
         val = 1;
         break;
     case NFI_STA_REG32: {
-        uint32_t fsm = FSM_IDLE;
-        uint32_t remain = 0;
-
-        if (s->page_armed) {
-            uint32_t len = nfc_stream_len(s);
-            fsm = FSM_CUSTOM_DATA;
-            if (s->stream_pos < len) {
-                remain = len - s->stream_pos;
-            }
-        }
         /*
+         * Everything here stays clear.
+         *
+         * STA_CMD (bit 0) means "a command is in flight"; the driver waits
+         * for it to CLEAR - nfc_wait_status_ready() polls !(val & STA_CMD) -
+         * and treats BUSY (bit 8) as an error, so a model that finishes a
+         * command the moment it is written must report both as clear.
+         *
+         * NAND_FSM must read FSM_IDLE for the same reason the real hardware
+         * drops it after every access (see the comment in nfc_pio_read):
+         * nfc_pio_read() only reprograms CNFG - and thereby selects byte
+         * versus word PIO mode - when it sees a state other than
+         * FSM_CUSTOM_DATA.  Leaving the FSM parked in CUSTOM_DATA meant the
+         * driver read 8 ID bytes through a word-sized port, so id[1] came
+         * from byte 5 instead of byte 1, nand_scan_ident() found no match,
+         * nfc_probe() returned before nand_register(), and the SPL never had
+         * a NAND device to boot from.
+         */
+        val = 0;
+        break;        /*
          * STA_CMD (bit 0) means "a command is in flight".  The driver waits
          * for it to CLEAR: nfc_wait_status_ready() in
          * drivers/mtd/nand/mt7621_nand.c polls !(val & STA_CMD) until the
