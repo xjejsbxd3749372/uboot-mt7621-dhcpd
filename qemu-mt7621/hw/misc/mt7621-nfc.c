@@ -250,8 +250,16 @@ static uint64_t nfc_nfi_read(void *opaque, hwaddr addr, unsigned size)
                 remain = len - s->stream_pos;
             }
         }
-        val = (fsm << NAND_FSM_S) | (remain & 0x1f) |
-              (s->cmd_ready ? (1u << STA_CMD_S) : 0);
+        /*
+         * STA_CMD (bit 0) means "a command is in flight".  The driver waits
+         * for it to CLEAR: nfc_wait_status_ready() in
+         * drivers/mtd/nand/mt7621_nand.c polls !(val & STA_CMD) until the
+         * timeout, and BUSY is likewise checked as an error.  This model
+         * finishes a command the moment it is written, so both stay clear -
+         * asserting STA_CMD and leaving it set stalled nand_init() for the
+         * whole run and sent the SPL down the ymodem emergency path.
+         */
+        val = (fsm << NAND_FSM_S) | (remain & 0x1f);
         break;
     }
     case NFI_FIFOSTA_REG16: {
@@ -341,7 +349,6 @@ static void nfc_nfi_write(void *opaque, hwaddr addr, uint64_t val64,
         s->n_cmds++;
         s->addr_n = 0;
         s->in_addr_phase = 0;
-        s->cmd_ready = 1;
         if (s->cmd == NAND_CMD_READSTART && nfc_is_read_cmd(s)) {
             nfc_load_page(s, nfc_decode_page(s), nfc_decode_col(s));
         } else if (s->cmd == NAND_CMD_RESET) {
