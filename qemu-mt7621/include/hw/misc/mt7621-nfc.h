@@ -107,6 +107,7 @@ struct mt7621NfcState {
      * which pages were fetched and whether they held image data at all.
      */
     uint64_t n_page_trace;
+    uint64_t n_id_trace;
     uint64_t n_addr_trace;
 };
 
