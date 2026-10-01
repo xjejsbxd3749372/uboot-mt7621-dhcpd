@@ -65,7 +65,6 @@ struct mt7621NfcState {
     uint8_t addr_byte[8];
     int addr_n;
     int in_addr_phase;      /* an address byte was written since the last command */
-    int cmd_ready;          /* STA_CMD clear */
 
     /* page being read into the PIO stream */
     uint8_t page_buf[MT7621_NFC_PAGESIZE_TOTAL];
