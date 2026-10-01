@@ -120,8 +120,9 @@ static uint64_t nfc_page_offset(uint32_t page)
  * whole 90s window with nothing but these lines to explain where it is, so the
  * budget is generous but hard-capped; a run can never flood the log again.
  */
-#define NFC_TRACE_MAX      160
+#define NFC_TRACE_MAX      400
 #define NFC_PAGE_TRACE_MAX 16
+#define NFC_ADDR_TRACE_MAX 32
 
 /* Load the addressed page into the PIO stream buffer. */
 static void nfc_load_page(mt7621NfcState *s, uint32_t page, uint32_t col)
@@ -438,6 +439,17 @@ static void nfc_nfi_write(void *opaque, hwaddr addr, uint64_t val64,
         s->coladdr = val;
         /* one wire byte per write, in order */
         if (s->addr_n < (int)sizeof(s->addr_byte)) {
+            /*
+             * Every address byte arrives through here - mtk_nfc_send_address()
+             * writes the byte to NFI_COLADDR and 0 to NFI_ROWADDR - so logging
+             * them as they land proves which byte sequence the driver really
+             * sent, independently of any later state the loader may reuse.
+             */
+            if (s->n_addr_trace < NFC_ADDR_TRACE_MAX) {
+                s->n_addr_trace++;
+                fprintf(stderr, "nfc: addr[%d] = 0x%02x (cmd=0x%02x)\n",
+                        s->addr_n, val & 0xff, s->cmd);
+            }
             s->addr_byte[s->addr_n++] = val & 0xff;
             s->in_addr_phase = 1;
         }
