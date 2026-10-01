@@ -236,6 +236,67 @@ all bounded so they cannot flood the log:
   with interleaved stack traffic)
 - `nfc[n/40]` - the first 40 NFI register accesses
 
+### NAND, and where the boot now stops
+
+The SPL runs to completion, the controller is driven end to end, and the boot
+fails in the payload search:
+
+```
+U-Boot SPL 2018.09 (Oct 01 2026)
+Trying to boot from NAND
+nfc: read id ef f1 00 95
+wr 0x44 = 0xf1            <- NFI_CNRN: nand_scan_ident() matched, chip registered
+nfc: load page=35  col=512 addr=0x11a00 word0=0x8010aca8 raw=0:2:35:0:0 n=4
+nfc: load page=99  col=512 addr=0x31a00 word0=0x9c67e72a raw=0:2:99:0:0 n=4
+nfc: load page=163 col=512 addr=0x51a00 word0=0xffffffff raw=0:2:163:0:0 n=4
+nfc: load page=64  col=512 addr=0x20200 word0=0x659c8319 raw=0:2:64:0:0 n=4
+Trying to boot from UART
+Failed to load U-Boot image!
+```
+
+Four more model bugs were found by reading the driver rather than the log:
+
+1. **`NFI_STA.STA_CMD` was stuck high.** `nfc_wait_status_ready()` in
+   `drivers/mtd/nand/mt7621_nand.c` polls `!(val & STA_CMD)`; the model set the
+   bit when a command was written and never cleared it, so `nand_init()` spun
+   for the whole run. The model finishes a command immediately, so the bit must
+   read clear.
+2. **`NAND_CMD_READSTART` was defined as `0x0f`.** `include/linux/mtd/rawnand.h`
+   says `0x30`. The model therefore never matched a command the driver sends.
+3. **Pages were only armed on `READSTART`.** `nfc_read_page_hwecc()` issues no
+   command at all - the core sends `NAND_CMD_READ0` and the function starts the
+   transfer with `NFI_CON.NFI_BRD`. Arming now happens on the first
+   `NFI_DATAR` read, because the address cycle has not happened yet when the
+   command is decoded.
+4. **`READID` was unimplemented**, so `id[]` came back all `0xff`,
+   `nand_scan_ident()` found no match, `nfc_probe()` returned before
+   `nand_register()`, and there was no device at all. The id now served is
+   `ef f1 00 95 00` - the `W29N01HVSINA 1G` entry of `nand_ids.c`, whose
+   `SZ_2K / SZ_128 / SZ_128K / oob 64 / NAND_ECC_INFO(4, SZ_512)` matches
+   `MT7621_NFC_PAGE_SIZE / BLOCK_SIZE / OOB_SIZE / ECC_STEPS` exactly.
+
+Two follow-on faults in the same area:
+
+- **The PIO port stepped four bytes per access regardless of `CNFG.BYTE_RW`.**
+  `nfc_probe()` sets `BYTE_RW` before the id read, so `id[1]` was being taken
+  from byte 5 instead of byte 1. The step is now 1 or 4 from the register.
+- **`NAND_FSM` stayed in `FSM_CUSTOM_DATA`.** `nfc_pio_read()` only reprograms
+  `CNFG` - and thereby picks byte versus word mode - when it sees a state other
+  than `FSM_CUSTOM_DATA`, so a parked FSM froze the access width. The FSM now
+  reads `FSM_IDLE`, matching the hardware behaviour the driver documents.
+
+### What blocks L3 now
+
+`__rom_cfg` sits at flash 0x80 (`MTK_SPL_ROM_CFG_OFFS` 0x40 inside the uImage
+header) and reads `magic=0x31323637 size=0x11a00 align=0x20000`.
+`get_mtk_image_search_start()` returns `__rom_cfg.size + sizeof(image_header)`
+and `get_mtk_image_search_sector_size()` returns `__rom_cfg.align`. The observed
+reads are `0x11a00, 0x31a00, 0x51a00` (the raw `size` grid) and then
+`0x20200, 0x40200, 0x60200` - the payload is at `0x20000`, and neither grid
+lands on it. The raw address bytes are now logged so the next step is to decide
+whether the compose offset or the search start is wrong; the geometry itself is
+verified, since `0x11a00` is exactly `__rom_cfg.size`.
+
 ## What is not modelled, and why it is fine
 
 - **MT7603 / MT7612 radios.** Private PCIe devices, no model exists. The PCIe
