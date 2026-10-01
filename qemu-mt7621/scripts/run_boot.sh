@@ -82,6 +82,12 @@ tail -c "$TAIL_C" "$LOG"
 echo
 echo "==================================================="
 
+# head -c can cut right before the banner, and these are the lines that say
+# whether the clock and memory model are right, so surface them directly.
+echo "-------------------- key banner lines -----------"
+grep -aE "Clocks:|DRAM:|NAND:|CPU:|Model:|Net:|U-Boot( SPL)? 20[0-9]{2}\\." "$LOG" \
+    | head -20 | sed 's/^/  /'
+
 # Keep a bounded copy for the CI artefact; the raw log can be gigabytes.
 {
     echo "raw log: $LOG_BYTES bytes; showing first $HEAD_C + last $TAIL_C"
