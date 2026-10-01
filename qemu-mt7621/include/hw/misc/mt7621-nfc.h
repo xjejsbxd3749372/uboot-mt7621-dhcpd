@@ -84,6 +84,12 @@ struct mt7621NfcState {
      * name the state machine it is stuck in.
      */
     uint64_t n_trace;
+    /*
+     * Separate, smaller budget for page loads: the interesting question once
+     * the SPL falls through to ymodem is not which register was poked but
+     * which pages were fetched and whether they held image data at all.
+     */
+    uint64_t n_page_trace;
 };
 
 #endif /* HW_MISC_MT7621_NFC_H */
