@@ -60,6 +60,21 @@ void mt7621_get_clocks(u32 *pcpu_clk, u32 *pbus_clk, u32 *pddr_clk, u32 *pxtal_c
 
 	ffiv = REG_GET_VAL(CUR_CPU_FDIV, cur_clk);
 	ffrac = REG_GET_VAL(CUR_CPU_FFRAC, cur_clk);
+
+	/*
+	 * CUR_CPU_FDIV and CUR_CPU_FFRAC are live hardware status, not
+	 * configuration: a clock block that has not come up yet reads 0 for
+	 * both.  ffiv == 0 is an immediate divide by zero, and ffrac == 0
+	 * drives cpu_clk to 0, which makes get_tbclk() return 0 and turns
+	 * every later do_div() in lib/time.c into a divide by zero too.  On
+	 * MIPS that aborts the boot with a teq exception, so treat an
+	 * unusable status as a unit ratio and keep the reference rate.
+	 */
+	if (!ffiv || !ffrac) {
+		ffiv = 1;
+		ffrac = 1;
+	}
+
 	cpu_clk = cpu_clk / ffiv * ffrac;
 
 	mempll = readl(dramc_base + MT7621_DRAMC_MEMPLL6_REG);
