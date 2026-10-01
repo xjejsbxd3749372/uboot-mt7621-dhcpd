@@ -88,6 +88,16 @@ echo "-------------------- key banner lines -----------"
 grep -aE "Clocks:|DRAM:|NAND:|CPU:|Model:|Net:|U-Boot( SPL)? 20[0-9]{2}\\." "$LOG" \
     | head -20 | sed 's/^/  /'
 
+# Counts taken over the WHOLE log. The head/tail windows above only show a
+# slice, so reading NAND traffic out of them is misleading - 13 page loads in
+# one run and 2 in another were both just how many fell inside the window.
+echo "-------------------- model activity -------------"
+echo "  nfc page loads  : $(grep -ac 'nfc: load' "$LOG")"
+echo "  nfc id reads    : $(grep -ac 'nfc: read id' "$LOG")"
+echo "  unimp accesses  : $(grep -ac 'unimplemented device' "$LOG")"
+echo "  register trace  : $(grep -ac '^nfc' "$LOG") lines"
+echo "  log size        : $(stat -c%s "$LOG")B"
+
 # Keep a bounded copy for the CI artefact; the raw log can be gigabytes.
 {
     echo "raw log: $LOG_BYTES bytes; showing first $HEAD_C + last $TAIL_C"
