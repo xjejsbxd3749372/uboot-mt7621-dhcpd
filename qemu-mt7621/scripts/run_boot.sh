@@ -78,6 +78,11 @@ if [ "$SECS" != "0" ]; then
         MON_PID=$!
     fi
 
+    # QEMU writes straight to the log; the size cap is applied afterwards with
+    # truncate. The probe that proved the monitor socket works starts QEMU with
+    # its output redirected to a file and no pipe, and this is the only
+    # structural difference from it - a pipe on QEMU's stdout/err is not
+    # something to put in the path of its own startup.
     MI_ROUTER4_FLASH="$FLASH" timeout -k 10 "$SECS" \
         "$QEMU" \
         -M mi-router-4,flash="$FLASH" \
@@ -87,8 +92,13 @@ if [ "$SECS" != "0" ]; then
         -serial stdio \
         -monitor "$MON_TARGET,server=on,wait=off" \
         -d guest_errors,unimp,int \
-        2>&1 | head -c 400000000 > "$LOG"
-    rc=${PIPESTATUS[0]}
+        > "$LOG" 2>&1
+    rc=$?
+    # Bound the file the way head -c did: a guest stuck writing to the UART fills
+    # hundreds of megabytes in 90s and the grading step would crawl over it.
+    if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt 400000000 ]; then
+        truncate -s 400000000 "$LOG"
+    fi
     echo "-- qemu exit: $rc (124 = hit the ${SECS}s limit, expected)"
 
     # Timeline: the dumper can only report "no such file", which does not say
