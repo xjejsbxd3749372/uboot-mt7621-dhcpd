@@ -12,6 +12,7 @@ Usage: monitor_dump.py <unix-socket-path | tcp:host:port> <seconds-to-wait> [cmd
 The target argument takes a unix socket path, or "tcp:host:port" - the latter
 exists so the same code can be exercised where AF_UNIX is unavailable.
 """
+import os
 import socket
 import sys
 import time
@@ -33,20 +34,28 @@ def connect(target):
 
 time.sleep(DELAY)
 
-# Bounded: if the monitor never comes up this must give up rather than hold the
-# whole run. An unreachable TCP target stalls on connect() for ~2s each time on
-# some systems, so a plain attempt count is not a time limit.
+# The socket only exists once QEMU has created it, and QEMU is busy mapping a
+# 128MiB flash image first, so waiting is normal. Keep trying until the run's
+# own deadline is close: DELAY is already "seconds before the kill", so a fixed
+# 12s window gave up while the guest was still starting (observed in CI:
+# "no connection to unix:/tmp/qemu-mon-13551.sock after 12s" and no dump).
+# The loop still terminates - it is bounded by CONNECT_WINDOW - so a monitor
+# that never appears cannot hold the run.
 s = None
-deadline = time.time() + 12.0
+last_err = None
+deadline = time.time() + float(os.environ.get("MON_CONNECT_WINDOW", "75"))
 while time.time() < deadline:
     try:
         s = connect(TARGET)
         break
-    except OSError:
-        time.sleep(0.25)
+    except OSError as e:
+        last_err = e
+        time.sleep(0.5)
         s = None
 if s is None:
-    print("monitor: no connection to %s after 12s" % TARGET, file=sys.stderr)
+    print("monitor: no connection to %s (waited %.0fs, last error: %s)"
+          % (TARGET, float(os.environ.get("MON_CONNECT_WINDOW", "75")), last_err),
+          file=sys.stderr)
     sys.exit(1)
 
 s.settimeout(5.0)
