@@ -165,6 +165,26 @@ grep -aE "Clocks:|DRAM:|NAND:|CPU:|Model:|Net:|U-Boot( SPL)? 20[0-9]{2}\\." "$LO
 # Counts taken over the WHOLE log. The head/tail windows above only show a
 # slice, so reading NAND traffic out of them is misleading - 13 page loads in
 # one run and 2 in another were both just how many fell inside the window.
+echo "-------------------- decoded stall sites ---------"
+# The mt7621-code blocks are printed where the guest actually was, which is
+# usually in the MIDDLE of the log - the head/tail windows above show the start
+# and the end and nothing in between. Dedupe them here so the site that spins is
+# visible whatever window it fell in, last one first: the last distinct PC is
+# the one the run ended on.
+awk '
+  /^mt7621-code: pc=/ {
+      pc=$0; sub(/^mt7621-code: pc=/, "", pc); sub(/ :$/, "", pc)
+      if (pc in seen) { dup=1 } else { seen[pc]=1; dup=0; order[++n]=pc; body[pc]="" }
+      next
+  }
+  /^ +[0-9a-f]{8}: 0x/ { if (!dup && pc != "") body[pc]=body[pc] "\n" $0; next }
+  END {
+      for (i = 1; i <= n; i++)
+          if (body[order[i]] != "")
+              print "  pc=" order[i] ":" body[order[i]]
+  }
+' "$LOG" | tail -80
+
 echo "-------------------- model activity -------------"
 echo "  nfc page loads  : $(grep -ac 'nfc: load' "$LOG")"
 # Which pages, so a reader can see how far a payload copy actually got.
