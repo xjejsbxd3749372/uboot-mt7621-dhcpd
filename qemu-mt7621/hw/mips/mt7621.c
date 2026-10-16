@@ -550,15 +550,27 @@ static void mt7621_pc_sample(void *opaque)
     {
         target_ulong pc = (target_ulong)env->active_tc.PC;
 
+        /*
+         * cnt/cmp are the whole point of printing here. The U-Boot phase of a
+         * stuck run sits in a get_timer() timeout loop:
+         *   jal get_timer ; lw deadline ; sltu ; beq exit ; counter++
+         * and that loop only ends when the timer advances past the deadline.
+         * If CP0 Count is not moving, the loop spins for ever and nothing else
+         * in the model is touched - which is exactly what the region counters
+         * show (every scratch region stops at accesses=1). Printing the two
+         * registers settles it without another guess.
+         */
         fprintf(stderr,
                 "mt7621-sample: pc=" TARGET_FMT_lx " sp=" TARGET_FMT_lx
                 " ra=" TARGET_FMT_lx " t9=" TARGET_FMT_lx
-                " epc=" TARGET_FMT_lx " status=" TARGET_FMT_lx "\n",
+                " epc=" TARGET_FMT_lx " status=" TARGET_FMT_lx
+                " cnt=%08x cmp=%08x\n",
                 pc, (target_ulong)env->active_tc.gpr[29],
                 (target_ulong)env->active_tc.gpr[31],
                 (target_ulong)env->active_tc.gpr[25],
                 (target_ulong)env->CP0_EPC,
-                (target_ulong)env->CP0_Status);
+                (target_ulong)env->CP0_Status,
+                (unsigned)env->CP0_Count, (unsigned)env->CP0_Compare);
 
         /*
          * Decode the site, once per distinct PC. "it is spinning at 0x80105cc8"
