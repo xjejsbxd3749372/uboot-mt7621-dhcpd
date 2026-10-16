@@ -59,9 +59,15 @@ if [ "$SECS" != "0" ]; then
     MON_TARGET="${MON_TARGET:-unix:$MONSOCK}"
     rm -f "$MONSOCK" "$MONLOG"
     MON_PID=""
+    # Timing: wait most of the run (the guest needs seconds to reach the hang),
+    # then connect. MON_CONNECT_WINDOW has to close before the kill, otherwise
+    # the socket is gone by the time the dump is attempted.
+    MON_WAIT=$(( SECS > 30 ? SECS - 15 : SECS ))
+    MON_WINDOW=$(( SECS > 30 ? 12 : 5 ))
     if [ "$SECS" -gt 20 ] && command -v python3 >/dev/null 2>&1; then
-        python3 "$(dirname "$0")/monitor_dump.py" "$MON_TARGET" \
-            "$(( SECS > 20 ? SECS - 15 : SECS ))" > "$MONLOG" 2>&1 &
+        MON_CONNECT_WINDOW="$MON_WINDOW" \
+        python3 "$(dirname "$0")/monitor_dump.py" "$MON_TARGET" "$MON_WAIT" \
+            > "$MONLOG" 2>&1 &
         MON_PID=$!
     fi
 
