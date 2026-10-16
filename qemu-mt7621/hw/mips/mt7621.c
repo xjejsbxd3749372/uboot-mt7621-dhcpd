@@ -26,6 +26,7 @@
 #include "hw/misc/mt7621-nfc.h"
 #include "hw/qdev-properties.h"
 #include "exec/memory.h"
+#include "exec/cpu-common.h"   /* cpu_memory_rw_debug */
 #include "sysemu/reset.h"
 #include "qom/object.h"
 /* MIPSCPU, MIPS_CPU_TYPE_NAME, cpu_mips_*_init() live in the target headers,
@@ -275,6 +276,9 @@ struct MT7621SoCState {
     /* region-transition trace: which 4KB page the CPU is running in, in order */
     hwaddr last_region;
     int n_regions;
+    /* last $pc whose instruction was decoded, and how many were decoded */
+    target_ulong last_dis_pc;
+    int n_dis;
     MemoryRegion flash_mmap_mr;
     MT7621Scratch scratch[MT7621_N_SCRATCH];
     MemoryRegion scratch_mr[MT7621_N_SCRATCH];
@@ -467,6 +471,54 @@ static const MemoryRegionOps mt7621_scratch_ops = {
  * QEMU_CLOCK_REALTIME rather than VIRTUAL so the samples keep coming even if
  * the guest wedges in a halt.
  */
+/*
+ * Decode the few MIPS instructions needed to read a spin loop by eye.
+ *
+ * The monitor socket was the obvious way to get this and it does not appear
+ * when the machine is given a real flash image - the probe creates it with
+ * /dev/null and with flash.bin, the boot run never does, and the difference is
+ * somewhere in how QEMU is launched rather than in the machine. Rather than
+ * keep chasing chardev wiring, read the guest's own memory here: the sampler
+ * already holds a CPUMIPSState, so the instruction at $pc can be fetched and
+ * printed directly, which is what the monitor was going to be asked for.
+ */
+static void mt7621_disasm(uint32_t w, char *out, size_t n, uint32_t pc)
+{
+    unsigned op = (w >> 26) & 0x3f, rs = (w >> 21) & 0x1f, rt = (w >> 16) & 0x1f;
+    unsigned rd = (w >> 11) & 0x1f, sh = (w >> 6) & 0x1f, fn = w & 0x3f;
+    int si = (int)(int16_t)(w & 0xffff);
+
+    switch (op) {
+    case 0x0f: g_snprintf(out, n, "lui  $%u,0x%x", rt, (unsigned)(w & 0xffff)); break;
+    case 0x09: g_snprintf(out, n, "addiu $%u,$%u,%d", rt, rs, si); break;
+    case 0x0d: g_snprintf(out, n, "ori  $%u,$%u,0x%x", rt, rs, (unsigned)(w & 0xffff)); break;
+    case 0x0c: g_snprintf(out, n, "andi $%u,$%u,0x%x", rt, rs, (unsigned)(w & 0xffff)); break;
+    case 0x23: g_snprintf(out, n, "lw   $%u,%d($%u)", rt, si, rs); break;
+    case 0x2b: g_snprintf(out, n, "sw   $%u,%d($%u)", rt, si, rs); break;
+    case 0x24: g_snprintf(out, n, "lbu  $%u,%d($%u)", rt, si, rs); break;
+    case 0x04: g_snprintf(out, n, "beq  $%u,$%u,0x%x", rs, rt, pc + 4 + (si << 2)); break;
+    case 0x05: g_snprintf(out, n, "bne  $%u,$%u,0x%x", rs, rt, pc + 4 + (si << 2)); break;
+    case 0x02: g_snprintf(out, n, "j    0x%x", (pc + 4) & 0xf0000000u |
+                                                 ((w & 0x3ffffff) << 2)); break;
+    case 0x03: g_snprintf(out, n, "jal  0x%x", (pc + 4) & 0xf0000000u |
+                                                 ((w & 0x3ffffff) << 2)); break;
+    case 0x10: g_snprintf(out, n, "mfc0 $%u,$%u", rt, rd); break;
+    case 0x00:
+        if (fn == 0x08) g_snprintf(out, n, "jr   $%u", rs);
+        else if (fn == 0x09) g_snprintf(out, n, "jalr $%u", rs);
+        else if (fn == 0x21) g_snprintf(out, n, "addu $%u,$%u,$%u", rd, rs, rt);
+        else if (fn == 0x23) g_snprintf(out, n, "subu $%u,$%u,$%u", rd, rs, rt);
+        else if (fn == 0x2b) g_snprintf(out, n, "sltu $%u,$%u,$%u", rd, rs, rt);
+        else if (fn == 0x24) g_snprintf(out, n, "and  $%u,$%u,$%u", rd, rs, rt);
+        else if (fn == 0x25) g_snprintf(out, n, "or   $%u,$%u,$%u", rd, rs, rt);
+        else if (fn == 0x0c) g_snprintf(out, n, "syscall");
+        else if (fn == 0x0d) g_snprintf(out, n, "break");
+        else g_snprintf(out, n, "spec fn=0x%x", fn);
+        break;
+    default: g_snprintf(out, n, "op=0x%02x 0x%08x", op, w); break;
+    }
+}
+
 static void mt7621_pc_sample(void *opaque)
 {
     MT7621SoCState *s = opaque;
@@ -495,16 +547,52 @@ static void mt7621_pc_sample(void *opaque)
      * - sp inside 0xbe10xxxx and ra pointing back into the SPL image - or the
      * CPU executing its own stack as instructions, which means a bad jump.
      */
-    fprintf(stderr,
-            "mt7621-sample: pc=" TARGET_FMT_lx " sp=" TARGET_FMT_lx
-            " ra=" TARGET_FMT_lx " t9=" TARGET_FMT_lx
-            " epc=" TARGET_FMT_lx " status=" TARGET_FMT_lx "\n",
-            (target_ulong)env->active_tc.PC,
-            (target_ulong)env->active_tc.gpr[29],
-            (target_ulong)env->active_tc.gpr[31],
-            (target_ulong)env->active_tc.gpr[25],
-            (target_ulong)env->CP0_EPC,
-            (target_ulong)env->CP0_Status);
+    {
+        target_ulong pc = (target_ulong)env->active_tc.PC;
+
+        fprintf(stderr,
+                "mt7621-sample: pc=" TARGET_FMT_lx " sp=" TARGET_FMT_lx
+                " ra=" TARGET_FMT_lx " t9=" TARGET_FMT_lx
+                " epc=" TARGET_FMT_lx " status=" TARGET_FMT_lx "\n",
+                pc, (target_ulong)env->active_tc.gpr[29],
+                (target_ulong)env->active_tc.gpr[31],
+                (target_ulong)env->active_tc.gpr[25],
+                (target_ulong)env->CP0_EPC,
+                (target_ulong)env->CP0_Status);
+
+        /*
+         * Decode the site, once per distinct PC. "it is spinning at 0x80105cc8"
+         * is not a diagnosis; the instruction at that address usually is. The
+         * monitor socket would have answered this and does not come up for a
+         * boot run, so read the guest's memory directly.
+         */
+        if (pc != s->last_dis_pc) {
+            unsigned i;
+
+            s->last_dis_pc = pc;
+            if (s->n_dis < 200) {
+                s->n_dis++;
+                fprintf(stderr, "mt7621-code: pc=" TARGET_FMT_lx " :", pc);
+                for (i = 0; i < 4; i++) {
+                    target_ulong a = pc + 4 * i;
+                    uint32_t w = 0;
+                    char text[64];
+                    /* cpu_memory_rw_debug returns 0 on success */
+                    int rc = cpu_memory_rw_debug(CPU(s->cpu), a,
+                                                 (uint8_t *)&w, sizeof(w), 0);
+                    if (rc != 0) {
+                        g_snprintf(text, sizeof(text), "<unreadable>");
+                    } else {
+                        w = (uint32_t)ldl_le_p((uint8_t *)&w);
+                        mt7621_disasm(w, text, sizeof(text), (uint32_t)a);
+                    }
+                    fprintf(stderr, "\n    " TARGET_FMT_lx ": 0x%08x  %s",
+                            a, w, text);
+                }
+                fprintf(stderr, "\n");
+            }
+        }
+    }
     timer_mod(s->pc_sample,
               qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 20 * 1000000ULL);
 }
@@ -772,6 +860,8 @@ static void mt7621_soc_realize(DeviceState *dev, Error **errp)
     }
 
     /* start the PC sampler: one sample every 20ms of wall time */
+    s->last_dis_pc = (target_ulong)-1;   /* so the first sample decodes */
+    s->n_dis = 0;
     s->pc_sample = timer_new(QEMU_CLOCK_REALTIME, SCALE_NS,
                              mt7621_pc_sample, s);
     timer_mod(s->pc_sample, qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
