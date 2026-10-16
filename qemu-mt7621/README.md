@@ -131,6 +131,41 @@ recomputed and re-verified - both are stored little-endian. Equal-length edits
 inside the rootfs invalidate its node checksums, so the published files must
 not be flashed back to a device.
 
+### Why L4 still fails: the PHY access never completed
+
+With the stock dump in place the boot gets past NAND and reaches `Net:`. It then
+stopped dead, and the model's counters said why:
+
+    scratch[mt7621-fe-and-friends]: accesses=52488813 dominant=0x10a004 count=52484977
+
+52,484,977 of 52,488,813 accesses hit one register. `0x10a004` in that window is
+physical `0x1e110004` = `gmac_base(0x1e110000) + GMAC_PIAC_REG(0x0004)`.
+`mt7621_mdio_rw()` (drivers/net/mt7621_eth.c) writes PIAC with `PHY_ACS_ST`
+(bit 31) set and then:
+
+    wait_for_bit_le32(priv->gmac_base + GMAC_PIAC_REG, REG_MASK(PHY_ACS_ST), 0, 5000, 0);
+
+It waits for the hardware to clear the bit when the MDC frame finishes. A plain
+read-back register never clears it, so every MDIO frame burned its full 5000
+tries - and PHY setup plus link detection issue thousands of them.
+
+The model now latches the start on write and clears it on the next read of that
+register. The counter went from 52,484,977 accesses to **1**, and the boot moved
+on. `bootcmd=tftp` still cannot finish - there is no link partner and no TFTP
+server in the emulation - so the run ends at the 90s limit with the console past
+`Net:` and no `bootm`.
+
+What the stock environment actually carries, read out of the dump's `0x80000`
+block (first entry, 4-byte little-endian CRC32 before it):
+
+    bootcmd=tftp        bootdelay=5      boot_wait=on
+    ipaddr=192.168.31.1 serverip=192.168.31.100
+    flag_boot_type=2    mode=Router      flag_boot_success=1
+
+There is no `zbootcmd` and no bootmenu selection in the environment, so
+`bootcmd=tftp` is the path a real device takes - which is why making the
+network stage behave is the faithful fix rather than swapping the command out.
+
 ## QEMU 9.2 API traps hit on the way
 
 Every one of these cost a CI cycle before it was found:
@@ -211,7 +246,7 @@ nfc[8/40]: wr off=0x0c val=0x30c77fff NFI_ACCON
 | L1 console output | **PASS** |
 | L2 SPL stage + NAND/DRAM init | **PASS** |
 | L3 main U-Boot banner | **PASS** (run 36828431431) |
-| L4 Linux `Linux version` | FAIL - needs a stock image that actually boots |
+| L4 Linux `Linux version` | FAIL - U-Boot never reaches `bootm`, see below |
 
 The chain that got there, each step found by instrumentation rather than guesswork:
 
