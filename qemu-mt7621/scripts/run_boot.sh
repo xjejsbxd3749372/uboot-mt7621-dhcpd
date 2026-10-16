@@ -47,7 +47,11 @@ if [ "$SECS" != "0" ]; then
     # -d writes to stderr, so 2>&1 has to be merged in before the pipe for
     # head to bound the diagnostics as well as the console.
     # The monitor gets its own channel, so the hang can be interrogated
-    # before the timeout kills the guest. The PC sampler names the address that
+    # before the timeout kills the guest. -display none is deliberate: the
+    # obvious -nographic expands to "-serial mon:stdio -display none", which
+    # creates a monitor of its own on the mux, and QEMU then never creates the
+    # socket this asks for (observed: "No such file or directory" for the whole
+    # run while QEMU itself reported no error). The PC sampler names the address that
     # spins; only the monitor can say what instruction lives there, and after
     # SIGTERM there is nothing left to ask. MON_TARGET is overridable so this
     # wiring can be exercised on a host without AF_UNIX.
@@ -75,7 +79,7 @@ if [ "$SECS" != "0" ]; then
         "$QEMU" \
         -M mi-router-4,flash="$FLASH" \
         -m 128 \
-        -nographic \
+        -display none \
         -no-reboot \
         -serial stdio \
         -monitor "$MON_TARGET,server=on,wait=off" \
