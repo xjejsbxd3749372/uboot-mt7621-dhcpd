@@ -66,8 +66,11 @@ if [ "$SECS" != "0" ]; then
     # Timing: wait most of the run (the guest needs seconds to reach the hang),
     # then connect. MON_CONNECT_WINDOW has to close before the kill, otherwise
     # the socket is gone by the time the dump is attempted.
-    MON_WAIT=$(( SECS > 30 ? SECS - 15 : SECS ))
-    MON_WINDOW=$(( SECS > 30 ? 12 : 5 ))
+    # The dumper connects immediately (the socket exists from QEMU startup) and
+    # waits MON_WAIT, so the dump lands a few seconds before the kill and the
+    # connection is never re-established at a bad moment.
+    MON_WAIT=$(( SECS > 30 ? SECS - 12 : SECS ))
+    MON_WINDOW=$(( SECS > 30 ? SECS : 30 ))
     if [ "$SECS" -gt 20 ] && command -v python3 >/dev/null 2>&1; then
         MON_CONNECT_WINDOW="$MON_WINDOW" \
         python3 "$(dirname "$0")/monitor_dump.py" "$MON_TARGET" "$MON_WAIT" \
@@ -87,6 +90,21 @@ if [ "$SECS" != "0" ]; then
         2>&1 | head -c 400000000 > "$LOG"
     rc=${PIPESTATUS[0]}
     echo "-- qemu exit: $rc (124 = hit the ${SECS}s limit, expected)"
+
+    # Timeline: the dumper can only report "no such file", which does not say
+    # whether the socket ever existed. Record what is actually there.
+    echo "-- monitor target: $MON_TARGET"
+    case "$MON_TARGET" in
+        unix:*)
+            MSOCK="${MON_TARGET#unix:}"; MSOCK="${MSOCK%%,*}"
+            if [ -S "$MSOCK" ]; then
+                echo "-- monitor socket present at exit: $MSOCK"
+            else
+                echo "-- monitor socket ABSENT at exit: $MSOCK"
+                ls -la "$(dirname "$MSOCK")" 2>/dev/null | head -20
+            fi
+            ;;
+    esac
 
     if [ -n "$MON_PID" ]; then
         # Only wait when the run really hit the limit - the dump lands before
