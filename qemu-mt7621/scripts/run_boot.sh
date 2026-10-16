@@ -46,17 +46,53 @@ if [ "$SECS" != "0" ]; then
     # gigabytes in 90s (observed: 4.2GB), which makes the grading crawl.
     # -d writes to stderr, so 2>&1 has to be merged in before the pipe for
     # head to bound the diagnostics as well as the console.
+    # The monitor gets its own channel, so the hang can be interrogated
+    # before the timeout kills the guest. The PC sampler names the address that
+    # spins; only the monitor can say what instruction lives there, and after
+    # SIGTERM there is nothing left to ask. MON_TARGET is overridable so this
+    # wiring can be exercised on a host without AF_UNIX.
+    MONLOG="$LOG.monitor"
+    MONSOCK="${TMPDIR:-/tmp}/qemu-mon-$$.sock"
+    # server=on,wait=off is spelled out rather than the legacy ",server,nowait":
+    # wait defaults to on for a socket server, and QEMU would then block at
+    # startup until the dumper connects - the guest would never run.
+    MON_TARGET="${MON_TARGET:-unix:$MONSOCK}"
+    rm -f "$MONSOCK" "$MONLOG"
+    MON_PID=""
+    if [ "$SECS" -gt 20 ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$(dirname "$0")/monitor_dump.py" "$MON_TARGET" \
+            "$(( SECS > 20 ? SECS - 15 : SECS ))" > "$MONLOG" 2>&1 &
+        MON_PID=$!
+    fi
+
     MI_ROUTER4_FLASH="$FLASH" timeout -k 10 "$SECS" \
         "$QEMU" \
         -M mi-router-4,flash="$FLASH" \
         -m 128 \
         -nographic \
         -no-reboot \
-        -serial mon:stdio \
+        -serial stdio \
+        -monitor "$MON_TARGET,server=on,wait=off" \
         -d guest_errors,unimp,int \
         2>&1 | head -c 400000000 > "$LOG"
     rc=${PIPESTATUS[0]}
     echo "-- qemu exit: $rc (124 = hit the ${SECS}s limit, expected)"
+
+    if [ -n "$MON_PID" ]; then
+        # Only wait when the run really hit the limit - the dump lands before
+        # then. On an early exit the monitor is already gone, and waiting would
+        # stall the script for the dumper's whole remaining delay.
+        if [ "$rc" != "124" ]; then
+            kill "$MON_PID" 2>/dev/null
+        fi
+        wait "$MON_PID" 2>/dev/null
+        if [ -s "$MONLOG" ]; then
+            cat "$MONLOG"
+        else
+            echo "-- monitor dump: nothing captured"
+        fi
+    fi
+    rm -f "$MONSOCK"
 else
     echo "== grading existing log: $LOG =="
 fi
