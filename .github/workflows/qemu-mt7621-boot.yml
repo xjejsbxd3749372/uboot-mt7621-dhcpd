@@ -112,6 +112,41 @@ jobs:
             || echo "::warning::comparison image not composable, comparison boot will be skipped"
           fi
 
+      - name: probe the monitor chardev wiring
+        run: |
+          set -uo pipefail
+          QEMU=/tmp/qemu-mt7621-build/build/qemu-system-mipsel
+          SOCK=/tmp/probe-mon.sock
+          rm -f "$SOCK"
+          # Start QEMU with the same chardev flags the boot run uses, then look
+          # for the socket. If this fails the dump can never work, and knowing
+          # that here beats reading "No such file or directory" after a 90s run.
+          timeout -k 5 20 "$QEMU" -M mi-router-4,flash=/dev/null -m 128 \
+              -display none -no-reboot -serial stdio \
+              -monitor "unix:$SOCK,server=on,wait=off" \
+              >/tmp/probe.log 2>&1 &
+          QPID=$!
+          for i in $(seq 1 20); do
+              [ -S "$SOCK" ] && break
+              sleep 0.5
+          done
+          if [ -S "$SOCK" ]; then
+              echo "monitor socket created: $SOCK"
+              python3 - "$SOCK" <<'PY'
+          import socket, sys
+          s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          s.settimeout(5); s.connect(sys.argv[1])
+          s.sendall(b"info registers\n")
+          print("monitor replied:", s.recv(200).decode("utf-8","replace").splitlines()[:2])
+          s.close()
+          PY
+          else
+              echo "::warning::monitor socket was NOT created; qemu said:"
+              head -20 /tmp/probe.log
+          fi
+          kill $QPID 2>/dev/null || true
+          wait $QPID 2>/dev/null || true
+
       - name: run and grade the simulated boot (SPL + payload)
         run: |
           bash qemu-mt7621/scripts/run_boot.sh \
