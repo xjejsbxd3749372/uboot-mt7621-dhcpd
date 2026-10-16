@@ -32,18 +32,14 @@ def connect(target):
     return s
 
 
-time.sleep(DELAY)
-
-# The socket only exists once QEMU has created it, and QEMU is busy mapping a
-# 128MiB flash image first, so waiting is normal. Keep trying until the run's
-# own deadline is close: DELAY is already "seconds before the kill", so a fixed
-# 12s window gave up while the guest was still starting (observed in CI:
-# "no connection to unix:/tmp/qemu-mon-13551.sock after 12s" and no dump).
-# The loop still terminates - it is bounded by CONNECT_WINDOW - so a monitor
-# that never appears cannot hold the run.
+# Connect FIRST, then wait. The socket is created when QEMU starts, so holding
+# the connection open from the beginning removes the race that made this fail:
+# connecting only after DELAY meant the connect window could expire while QEMU
+# was still bringing the guest up. A monitor socket tolerates being connected
+# long before it is asked anything.
 s = None
 last_err = None
-deadline = time.time() + float(os.environ.get("MON_CONNECT_WINDOW", "75"))
+deadline = time.time() + float(os.environ.get("MON_CONNECT_WINDOW", "90"))
 while time.time() < deadline:
     try:
         s = connect(TARGET)
@@ -54,9 +50,14 @@ while time.time() < deadline:
         s = None
 if s is None:
     print("monitor: no connection to %s (waited %.0fs, last error: %s)"
-          % (TARGET, float(os.environ.get("MON_CONNECT_WINDOW", "75")), last_err),
+          % (TARGET, float(os.environ.get("MON_CONNECT_WINDOW", "90")), last_err),
           file=sys.stderr)
     sys.exit(1)
+
+print("monitor: connected to %s, waiting %.0fs before the dump" % (TARGET, DELAY),
+      file=sys.stderr)
+
+time.sleep(DELAY)
 
 s.settimeout(5.0)
 s.sendall(CMDS.encode())
